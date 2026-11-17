@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 
 const YTDLP = process.env.YTDLP_PATH || 'yt-dlp';
-const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000; // a user's stories or a highlight can have dozens of items
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000; // a highlight can have 100 items
 // yt-dlp only downloads Instagram videos; this plugin adds photos (see the file for details).
 const PLUGIN_DIR = path.join(import.meta.dirname, '..', 'yt-dlp-plugins');
 const BROWSER_UA =
@@ -165,13 +165,15 @@ function cookieArgs() {
 /**
  * Downloads everything `key` points at into `dir`: one item for a reel or single
  * photo, several for a carousel, story set or highlight. Returns
- * { items: [{ file, kind: 'video' | 'photo', width, height, duration }], author, description }.
+ * { items: [{ file, kind: 'video' | 'photo', width, height, duration }], author, description, partial },
+ * where `partial` means some items failed or the download timed out.
  */
 export async function downloadMedia(key, dir) {
   const request = requestFor(key);
   if (!request) throw new Error(`Not a valid media key: ${key}`);
 
   let stdout;
+  let partial = false;
   try {
     ({ stdout } = await run(
       YTDLP,
@@ -192,11 +194,13 @@ export async function downloadMedia(key, dir) {
       { timeout: DOWNLOAD_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
     ));
   } catch (err) {
-    // When one item of a carousel or story set fails, yt-dlp still downloads the
-    // rest but exits non-zero. Keep what it got.
-    if (err.killed || !err.stdout?.includes('{')) throw err;
-    console.warn(`[${key}] some items failed:`, err.stderr);
+    // When one item of a carousel or story set fails, yt-dlp still downloads the rest
+    // but exits non-zero; on a timeout it is killed partway. Either way, keep the items
+    // it finished (each is printed only once it's complete).
+    if (!err.stdout?.includes('{')) throw Object.assign(err, { source: 'yt-dlp' });
+    console.warn(`[${key}] ${err.killed ? 'timed out' : 'some items failed'}:`, err.stderr);
     stdout = err.stdout;
+    partial = true;
   }
 
   const items = stdout
@@ -210,8 +214,10 @@ export async function downloadMedia(key, dir) {
 
   const first = items[0];
   return {
+    username: first.channel,
     author: first.channel ? `@${first.channel}` : first.uploader,
     description: first.description,
+    partial,
     items: items.map((item) => ({
       file: item.filepath,
       kind: PHOTO_EXT.test(item.ext) ? 'photo' : 'video',

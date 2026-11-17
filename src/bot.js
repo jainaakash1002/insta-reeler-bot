@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
-import { extractFrames } from './frames.js';
+import { dropRepeats, extractFrames } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -23,7 +23,6 @@ const CACHE_DIR = path.join(os.tmpdir(), 'insta-reel-bot');
 const CACHE_TTL_MS = 60 * 60 * 1000;
 // Bot API limits for files a bot uploads
 const UPLOAD_LIMIT = { video: 50 * 1024 * 1024, photo: 10 * 1024 * 1024 };
-const CAPTION_TEXT_LIMIT = 850; // Telegram captions max out at 1024 chars; leave room for the header/link
 const ALBUM_LIMIT = 10; // items per Telegram album (media group)
 const CALLBACK_DATA_LIMIT = 64; // bytes
 const MAX_BUTTONS = 100; // per inline keyboard
@@ -98,19 +97,14 @@ async function pruneCache() {
 const escapeHtml = (text) =>
   text.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
+/** A short caption: the account (linking to its profile) and a link to the post or story itself. */
 function buildCaption(media, key) {
-  let text = (media.description ?? '').trim();
-  if (text.length > CAPTION_TEXT_LIMIT) {
-    // drop a dangling half of an emoji (surrogate pair) before adding the ellipsis
-    text = `${text.slice(0, CAPTION_TEXT_LIMIT).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`;
-  }
-  return [
-    media.author && `👤 <b>${escapeHtml(media.author)}</b>`,
-    text && escapeHtml(text),
-    `🔗 <a href="${escapeHtml(requestFor(key).url)}">Open on Instagram</a>`,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  // `username` is new; older cached downloads only have `author` ("@name" or a full name).
+  const username = media.username ?? media.author?.match(/^@(\w[\w.]*)$/)?.[1];
+  const account = username
+    ? `👤 <a href="https://www.instagram.com/${username}/"><b>@${escapeHtml(username)}</b></a>`
+    : media.author && `👤 <b>${escapeHtml(media.author)}</b>`;
+  return [account, `🔗 <a href="${escapeHtml(requestFor(key).url)}">Open on Instagram</a>`].filter(Boolean).join('\n');
 }
 
 const megabytes = (bytes) => `${Math.round(bytes / 1024 / 1024)} MB`;
@@ -123,20 +117,52 @@ const videoOptions = (item) => ({
   ...(item.duration && { duration: Math.round(item.duration) }),
 });
 
-/** Screenshot buttons for the given videos (items numbered from 1 as `n`), or undefined if none fit. */
+/*
+ * Screenshot buttons carry `s1:<n>:<key>` (one frame from the middle of video n) or
+ * `ss:<n>:<key>` (SCREENSHOT_COUNT frames spread across it).
+ */
+const SCREENSHOT_DATA = /^s([s1]):(\d+):([\w.-]+)$/;
+
+/** Two screenshot buttons (1 / all) per video, numbered from 1 as `n`; undefined if none fit. */
 function screenshotKeyboard(key, videos) {
-  const buttons = videos
-    .map((video) => ({ video, data: `ss:${video.n}:${key}` }))
-    .filter(({ data }) => Buffer.byteLength(data) <= CALLBACK_DATA_LIMIT)
-    .slice(0, MAX_BUTTONS);
-  if (buttons.length === 0) return undefined;
+  const rows = videos
+    .map((video) => ({ video, one: `s1:${video.n}:${key}`, all: `ss:${video.n}:${key}` }))
+    .filter(({ all }) => Buffer.byteLength(all) <= CALLBACK_DATA_LIMIT)
+    .slice(0, MAX_BUTTONS / 2);
+  if (rows.length === 0) return undefined;
+  // The "1 screenshot" button is only for stories and highlights; reels and posts get "all" only.
+  const offerOne = needsLogin(key);
   const keyboard = new InlineKeyboard();
-  if (buttons.length === 1) return keyboard.text(`📸 Get ${SCREENSHOT_COUNT} screenshots`, buttons[0].data);
-  buttons.forEach(({ video, data }, i) => {
-    if (i > 0 && i % 4 === 0) keyboard.row();
-    keyboard.text(`📸 #${video.n}`, data);
+  rows.forEach(({ video, one, all }, i) => {
+    if (i > 0) keyboard.row(); // between rows only: a trailing empty row isn't valid
+    const label = rows.length === 1 ? '📸' : `📸 #${video.n}:`;
+    if (offerOne) keyboard.text(`${label} 1 screenshot`, one).text(`${label} all ${SCREENSHOT_COUNT}`, all);
+    else keyboard.text(rows.length === 1 ? `📸 Get ${SCREENSHOT_COUNT} screenshots` : `${label} ${SCREENSHOT_COUNT} screenshots`, all);
   });
   return keyboard;
+}
+
+/**
+ * Plans removing video n's screenshot buttons from the message they were on (once the user
+ * is done with that video). A message that was only there for those buttons gets deleted;
+ * a video keeps its message and just loses the buttons.
+ */
+function planButtonCleanup(message, n, key, deleteWhole) {
+  if (deleteWhole) return { deleteMessage: true }; // "1 screenshot": the whole message goes
+  const rows = message?.reply_markup?.inline_keyboard;
+  if (!rows) return null;
+  const isThisVideo = (button) => {
+    const match = button.callback_data?.match(SCREENSHOT_DATA);
+    return match && Number(match[2]) === n && match[3] === key;
+  };
+  const kept = rows.map((row) => row.filter((button) => !isThisVideo(button))).filter((row) => row.length);
+  // A text message that was only there for buttons goes once it has none; a video stays.
+  return { kept, deleteMessage: kept.length === 0 && message.text !== undefined };
+}
+
+async function applyButtonCleanup(ctx, plan) {
+  if (plan.deleteMessage) return ctx.deleteMessage().catch(() => {});
+  await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: plan.kept } }).catch(() => {});
 }
 
 /** Sends one photo or video as its own message. */
@@ -148,13 +174,13 @@ async function sendOne(ctx, item, extra = {}) {
 }
 
 /**
- * Sends items as albums of up to 10. `captionOptions` (caption, parse_mode) go on the very
- * first item; `messageOptions` (e.g. reply_parameters) on every message.
+ * Sends items as albums of up to 10. `captionOptions` (caption, parse_mode) go on the first
+ * item of every album; `messageOptions` (e.g. reply_parameters) on every message.
  */
 async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) {
   for (let i = 0; i < items.length; i += ALBUM_LIMIT) {
     const chunk = items.slice(i, i + ALBUM_LIMIT);
-    const first = i === 0 ? captionOptions : {};
+    const first = captionOptions; // every album gets the caption, not just the first
     if (chunk.length === 1) {
       await sendOne(ctx, chunk[0], { ...first, ...messageOptions }); // an album needs at least 2 items
       continue;
@@ -174,11 +200,10 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) 
 function describeError(err, key) {
   const detail = `${err?.stderr ?? ''} ${err?.message ?? ''}`;
   const story = needsLogin(key);
-  if (err?.code === 'ENOENT') return 'yt-dlp or ffmpeg is not installed on the machine running the bot.';
-  if (/no such option: --plugin-dirs/i.test(detail)) {
-    return 'yt-dlp on the machine running the bot is too old. Update it: brew upgrade yt-dlp';
+  // ENOENT from starting a program (not from a missing file) means the tool isn't installed
+  if (err?.code === 'ENOENT' && err?.syscall?.startsWith('spawn')) {
+    return 'yt-dlp or ffmpeg is not installed on the machine running the bot.';
   }
-  if (err?.killed) return 'Instagram took too long to respond. Try again in a bit.';
   if (err?.code === 'NEEDS_LOGIN') return LOGIN_HELP;
   if (err?.code === 'SHARE_LINK') {
     return "I couldn't open that share link. Open it in a browser and send me the instagram.com link it lands on.";
@@ -186,6 +211,15 @@ function describeError(err, key) {
   if (err?.code === 'NO_MEDIA') {
     return story ? "That story isn't there anymore. Stories disappear after 24 hours." : 'That post has nothing to download.';
   }
+  // Only blame Instagram (expired story, login, private post) for errors that came from yt-dlp.
+  if (err?.source === 'ffmpeg') return "Couldn't grab screenshots from that video. Try again, or try another video.";
+  if (err?.error_code && err?.description) return `Telegram didn't accept it: ${err.description}`; // GrammyError
+  if (err?.source !== 'yt-dlp') return 'Something went wrong on my side. Try again in a bit.';
+
+  if (/no such option: --plugin-dirs/i.test(detail)) {
+    return 'yt-dlp on the machine running the bot is too old. Update it: brew upgrade yt-dlp';
+  }
+  if (err.killed) return 'Instagram took too long to respond. Try again in a bit.';
   if (story) {
     return (
       "Couldn't get that story. It may have expired (stories last 24 hours), or the account is private " +
@@ -207,7 +241,7 @@ function describeError(err, key) {
 
 bot.use(async (ctx, next) => {
   if (ALLOWED_USERS.size === 0 || ALLOWED_USERS.has(ctx.from?.id)) return next();
-  if (ctx.callbackQuery) return ctx.answerCallbackQuery({ text: 'This bot is private.' });
+  if (ctx.callbackQuery) return ctx.answerCallbackQuery({ text: 'This bot is private.' }).catch(() => {});
   if (ctx.chat?.type === 'private') {
     return ctx.reply(`Sorry, this bot is private.\nYour Telegram user ID is ${ctx.from?.id}.`);
   }
@@ -221,10 +255,60 @@ bot.command(['start', 'help'], (ctx) =>
       '• stories, a user’s current stories (instagram.com/stories/username) and highlights' +
       (hasLogin() ? '' : ' (needs an Instagram login set up in the bot’s .env)') +
       '\n\n' +
-      `Tap “📸 Get ${SCREENSHOT_COUNT} screenshots” under a video to get frames from it.\n\n` +
+      'You can also send or forward me any photo or video: I’ll send it back without its caption.\n\n' +
+      `Under each video, tap “📸 1 screenshot” for one frame or “📸 all ${SCREENSHOT_COUNT}” for frames spread across it. ` +
+      'If the video is just a still picture (like a photo story with music), you get one screenshot.\n\n' +
       `Your Telegram user ID: ${ctx.from?.id}`,
   ),
 );
+
+// Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
+// from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
+// and returned as albums of up to 10, then the originals are deleted. Telegram reuses the
+// files by id; nothing is re-uploaded.
+const COLLECT_MS = 1500; // how long to wait for more photos/videos from the same chat
+const pendingMedia = new Map(); // chat id -> { items, timer }
+
+bot.on(['message:photo', 'message:video'], (ctx) => {
+  const { photo, video, message_id: order } = ctx.message;
+  const item = video ? { kind: 'video', file: video.file_id, order } : { kind: 'photo', file: photo.at(-1).file_id, order };
+  const chatId = ctx.chat.id;
+  const pending = pendingMedia.get(chatId) ?? { items: [] };
+  pending.items.push(item);
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => {
+    pendingMedia.delete(chatId);
+    resendMedia(chatId, pending.items).catch((err) => console.error('Re-sending media failed:', err));
+  }, COLLECT_MS);
+  pendingMedia.set(chatId, pending);
+});
+
+async function resendMedia(chatId, items) {
+  items.sort((a, b) => a.order - b.order); // the order they were sent in
+  try {
+    for (let i = 0; i < items.length; i += ALBUM_LIMIT) {
+      const chunk = items.slice(i, i + ALBUM_LIMIT);
+      if (chunk.length === 1) {
+        const [{ kind, file }] = chunk;
+        if (kind === 'video') await bot.api.sendVideo(chatId, file, { supports_streaming: true });
+        else await bot.api.sendPhoto(chatId, file);
+        continue;
+      }
+      await bot.api.sendMediaGroup(
+        chatId,
+        chunk.map(({ kind, file }) =>
+          kind === 'video' ? InputMediaBuilder.video(file, { supports_streaming: true }) : InputMediaBuilder.photo(file),
+        ),
+      );
+    }
+    // All copies are in the chat: remove the originals the user sent or forwarded.
+    // (Only after full success; if sending failed above, they stay.)
+    await bot.api.deleteMessages(chatId, items.map((item) => item.order)).catch(() => {});
+  } catch (err) {
+    console.error('Re-sending media failed:', err?.description ?? err);
+    await bot.api.sendMessage(chatId, `❌ ${describeError(err)}`).catch(() => {});
+  }
+}
 
 bot.on('message:text', (ctx) => {
   const link = parseInstagramLink(ctx.message.text);
@@ -257,15 +341,21 @@ async function sendMedia(ctx, link) {
     if (needsLogin(key) && !hasLogin()) throw Object.assign(new Error('Login needed'), { code: 'NEEDS_LOGIN' });
 
     const media = await getMedia(key);
-    await deliver(ctx, key, media);
+    const complete = await deliver(ctx, key, media);
     await ctx.api.deleteMessage(ctx.chat.id, status.message_id).catch(() => {});
+    // Everything arrived, so the user's link message has done its job. After an error, or if
+    // some items couldn't be sent, it stays so the user can see what they asked for.
+    if (complete) await ctx.deleteMessage().catch(() => {});
   } catch (err) {
     console.error(`[${key ?? link.share}]`, err?.stderr || err);
     await ctx.api.editMessageText(ctx.chat.id, status.message_id, `❌ ${describeError(err, key)}`).catch(() => {});
   }
 }
 
-/** Sends the downloaded items, then notes about skipped ones and screenshot buttons. */
+/**
+ * Sends the downloaded items, then notes about skipped ones and screenshot buttons.
+ * Returns true if every item was sent.
+ */
 async function deliver(ctx, key, media) {
   const items = media.items.map((item, i) => ({ ...item, n: i + 1 }));
   const sendable = items.filter(fitsTelegram);
@@ -275,11 +365,12 @@ async function deliver(ctx, key, media) {
   const buttons = keyboard ? { reply_markup: keyboard } : {};
   const caption = buildCaption(media, key);
   const single = items.length === 1;
+  const complete = tooBig.length === 0 && !media.partial;
 
   // One reel or photo: caption and button on the same message, like Instagram shows it.
-  if (single && sendable.length === 1) {
+  if (single && sendable.length === 1 && !media.partial) {
     await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
-    return;
+    return complete;
   }
 
   await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' });
@@ -289,31 +380,40 @@ async function deliver(ctx, key, media) {
       `⚠️ ${single ? `This ${item.kind} is` : `Item ${item.n} is a ${item.kind} of`} ${megabytes(item.size)}, ` +
       `over Telegram’s ${megabytes(UPLOAD_LIMIT[item.kind])} limit for bots, so I can’t send it.`,
   );
-  if (keyboard) {
-    if (single) notes.push('I can still grab screenshots from it.');
-    else if (videos.length === 1) notes.push(`Tap below for ${SCREENSHOT_COUNT} screenshots from the video (item ${videos[0].n}).`);
-    else notes.push(`Tap an item number for ${SCREENSHOT_COUNT} screenshots from that video:`);
+  if (media.partial) {
+    notes.push('⚠️ Some items couldn’t be downloaded (Instagram refused them or it took too long), so this isn’t all of it.');
   }
-  if (notes.length === 0) return;
+  if (keyboard) {
+    if (single && !sendable.length) notes.push('I can still grab screenshots from it.');
+    else if (single) notes.push('Screenshots from the video:');
+    else if (videos.length === 1) notes.push(`Screenshots from the video (item ${videos[0].n}):`);
+    else notes.push('Screenshots from a video (by item number):');
+  }
+  if (notes.length === 0) return complete;
   // If nothing could be sent, the caption still belongs in the chat.
   const text = [sendable.length ? '' : caption, ...notes].filter(Boolean).join('\n\n');
   await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...buttons });
+  return complete;
 }
 
-bot.callbackQuery(/^ss:(\d+):([\w.-]+)$/, async (ctx) => {
-  const n = Number(ctx.match[1]);
-  const key = ctx.match[2];
-  if (!requestFor(key)) return ctx.answerCallbackQuery();
-  await ctx.answerCallbackQuery({ text: '📸 Grabbing screenshots…' });
-  sendScreenshots(ctx, key, n).catch((err) => console.error(`[${key}] sendScreenshots failed:`, err));
+bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
+  const count = ctx.match[1] === '1' ? 1 : SCREENSHOT_COUNT;
+  const n = Number(ctx.match[2]);
+  const key = ctx.match[3];
+  if (!requestFor(key)) return ctx.answerCallbackQuery().catch(() => {});
+  // A tap that waited while the bot was restarting can't be answered any more (Telegram allows
+  // ~15 s); that's only the little toast, so still send the screenshots.
+  await ctx.answerCallbackQuery({ text: count === 1 ? '📸 Grabbing a screenshot…' : '📸 Grabbing screenshots…' }).catch(() => {});
+  sendScreenshots(ctx, key, n, count).catch((err) => console.error(`[${key}] sendScreenshots failed:`, err));
 });
 
 // Buttons from older versions of the bot
 bot.on('callback_query:data', (ctx) =>
-  ctx.answerCallbackQuery({ text: 'This button is from an older version of the bot. Send the link again.' }),
+  ctx.answerCallbackQuery({ text: 'This button is from an older version of the bot. Send the link again.' }).catch(() => {}),
 );
 
-async function sendScreenshots(ctx, key, n) {
+/** Sends `count` screenshots of video n (1 = one frame from the middle), minus repeated frames. */
+async function sendScreenshots(ctx, key, n, count) {
   const replyTo = ctx.callbackQuery.message?.message_id;
   const replyOptions = replyTo ? { reply_parameters: { message_id: replyTo } } : {};
   let framesDir;
@@ -325,14 +425,18 @@ async function sendScreenshots(ctx, key, n) {
     if (video?.kind !== 'video') throw Object.assign(new Error(`Item ${n} of ${key} is not a video`), { code: 'NO_MEDIA' });
 
     framesDir = await fs.mkdtemp(path.join(media.dir, 'frames-'));
-    const frames = await extractFrames(video.file, framesDir, SCREENSHOT_COUNT, video.duration);
-    const from = [media.author && `from ${media.author}`, media.items.length > 1 && `(item ${n})`].filter(Boolean);
-    await sendAlbums(
-      ctx,
-      frames.map(({ file }) => ({ file, kind: 'photo' })),
-      { caption: [`📸 ${frames.length} screenshots`, ...from].join(' ') },
-      replyOptions,
-    );
+    const grabbed = await extractFrames(video.file, framesDir, count, video.duration);
+    const frames = await dropRepeats(grabbed);
+
+    // Same short caption as the post itself: the account and a link to the content.
+    const caption = buildCaption(media, key);
+
+    // After any screenshot request the video's buttons go; after "1 screenshot" the whole message.
+    const cleanup = planButtonCleanup(ctx.callbackQuery.message, n, key, count === 1);
+    // Don't reply to a message that's about to be deleted (Telegram would show "Deleted message").
+    const sendOptions = cleanup?.deleteMessage ? {} : replyOptions;
+    await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), { caption, parse_mode: 'HTML' }, sendOptions);
+    if (cleanup) await applyButtonCleanup(ctx, cleanup);
   } catch (err) {
     console.error(`[${key}]`, err?.stderr || err);
     await ctx.reply(`❌ ${describeError(err, key)}`, replyOptions).catch(() => {});

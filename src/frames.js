@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -17,29 +18,104 @@ async function probeDuration(videoPath) {
   return Number.parseFloat(stdout);
 }
 
+/** Saves the first frame at or after `time` as a JPEG. Returns false if ffmpeg found none there. */
+async function grabFrame(videoPath, file, time) {
+  await run(FFMPEG, [
+    '-y',
+    '-loglevel', 'error',
+    '-ss', time.toFixed(3),
+    '-i', videoPath,
+    '-frames:v', '1',
+    // Videos are usually limited-range ("tv") color; JPEG is full range, and recent
+    // ffmpeg's JPEG encoder refuses limited-range frames. Convert them, and let the
+    // encoder accept the odd frame the conversion misses (seen near the end of some
+    // Instagram videos) instead of failing the whole screenshot set.
+    '-vf', 'scale=out_range=full',
+    '-strict', 'unofficial',
+    '-update', '1', // one image, not an image sequence
+    '-q:v', '2',
+    file,
+  ]);
+  // ffmpeg exits 0 without writing anything when no frame starts after `time`.
+  return fs.stat(file).then((stat) => stat.size > 0, () => false);
+}
+
 /**
- * Saves `count` evenly spaced frames from the video as full-resolution JPEGs in `outDir`.
+ * Saves up to `count` evenly spaced frames from the video as full-resolution JPEGs in `outDir`.
  * Each frame is taken from the middle of its slice, so you never get the black first/last frame.
  * Pass `duration` (seconds) if you already know it; otherwise ffprobe reads it.
+ * Returns the frames that could be grabbed; throws (with `source: 'ffmpeg'`) if none could.
  */
 export async function extractFrames(videoPath, outDir, count, duration) {
+  try {
+    return await grabFrames(videoPath, outDir, count, duration);
+  } catch (err) {
+    throw Object.assign(err, { source: 'ffmpeg' }); // so the bot doesn't blame Instagram
+  }
+}
+
+async function grabFrames(videoPath, outDir, count, duration) {
   const total = duration > 0 ? duration : await probeDuration(videoPath);
   if (!(total > 0)) throw new Error(`Could not read the duration of ${videoPath}`);
+  const slice = total / count;
 
-  return Promise.all(
+  const frames = await Promise.all(
     Array.from({ length: count }, async (_, i) => {
-      const time = ((i + 0.5) * total) / count;
       const file = path.join(outDir, `frame_${String(i + 1).padStart(2, '0')}.jpg`);
-      await run(FFMPEG, [
-        '-y',
-        '-loglevel', 'error',
-        '-ss', time.toFixed(3),
-        '-i', videoPath,
-        '-frames:v', '1',
-        '-q:v', '2',
-        file,
-      ]);
-      return { file, time };
+      // The middle of the slice, or its start if there's no frame after the middle
+      // (low-frame-rate videos, like slideshows Instagram makes from photo stories).
+      for (const time of [(i + 0.5) * slice, i * slice]) {
+        if (await grabFrame(videoPath, file, time)) return { file, time };
+      }
+      return null;
     }),
   );
+
+  const grabbed = frames.filter(Boolean);
+  if (grabbed.length === 0) throw new Error(`ffmpeg found no frames in ${videoPath}`);
+  return grabbed;
+}
+
+// Two frames count as the same picture when their 32x32 grayscale versions differ by less
+// than this on average (0-255 scale). Measured on real Instagram videos: a photo story with
+// music gives 0.0 between frames, a nearly still clip under 1.5, ordinary videos 4.7 and up.
+const SIGNATURE_SIZE = 32;
+const SAME_PICTURE_BELOW = 2;
+
+async function signature(file) {
+  const { stdout } = await run(
+    FFMPEG,
+    ['-loglevel', 'error', '-i', file, '-vf', `scale=${SIGNATURE_SIZE}:${SIGNATURE_SIZE},format=gray`, '-f', 'rawvideo', 'pipe:1'],
+    { encoding: 'buffer' },
+  );
+  return stdout;
+}
+
+function difference(a, b) {
+  if (a.length !== b.length || a.length === 0) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
+}
+
+/**
+ * Drops frames that look the same as the previous frame kept, so a still picture with
+ * music comes back as a single frame. If the comparison fails, returns all frames.
+ */
+export async function dropRepeats(frames) {
+  if (frames.length < 2) return frames;
+  try {
+    const signatures = await Promise.all(frames.map((frame) => signature(frame.file)));
+    const kept = [];
+    let last;
+    frames.forEach((frame, i) => {
+      if (last && difference(signatures[i], last) < SAME_PICTURE_BELOW) return;
+      kept.push(frame);
+      last = signatures[i];
+    });
+    return kept;
+  } catch (err) {
+    console.warn('Could not compare screenshots; sending them all:', err?.stderr || err);
+    return frames;
+  }
 }

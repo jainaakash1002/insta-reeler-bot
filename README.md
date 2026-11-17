@@ -1,6 +1,6 @@
 # insta-reel-bot
 
-A Telegram bot. Send it an Instagram link and it replies in the chat with what's in it, plus the author and caption:
+A Telegram bot. Send it an Instagram link and it replies in the chat with what's in it, with a short caption: the account (tap it to open the profile) and an **Open on Instagram** link to the post or story:
 
 | You send | You get |
 | --- | --- |
@@ -12,11 +12,15 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 | Highlight | The whole highlight, or just the item you shared |
 | Share link (`instagram.com/share/…`) | Whatever it points to |
 
-Every video gets a **📸 Get screenshots** button that sends evenly spaced full-resolution frames as an album.
+Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
+
+Once everything from a link has been sent, the bot deletes your message with the link to keep the chat clean. If something went wrong, the link stays.
+
+**Any photo or video you send or forward to the bot** comes back on its own: same file, no caption, no "Forwarded from" line. Several sent or forwarded together come back as one album (up to 10 per album). Once the copies are sent, the bot deletes the originals you sent or forwarded.
 
 **Stories and highlights need an Instagram login** (see [Stories and highlights](#stories-and-highlights)). Reels and posts work without one.
 
-It's written in Node with [grammY](https://grammy.dev). [yt-dlp](https://github.com/yt-dlp/yt-dlp) downloads from Instagram, with a small plugin in `yt-dlp-plugins/` that adds photos (yt-dlp on its own only downloads videos). ffmpeg grabs the frames.
+It's written in Node with [grammY](https://grammy.dev). [yt-dlp](https://github.com/yt-dlp/yt-dlp) downloads from Instagram, with a small plugin in `yt-dlp-plugins/` that adds photos (yt-dlp on its own only downloads videos) and works around Instagram's broken stories API. ffmpeg grabs the frames.
 
 ## Setup
 
@@ -64,7 +68,15 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 Instagram only shows stories and highlights to logged-in users, so the bot needs an Instagram login for them. Until one is set up, it replies with instructions instead.
 
 1. Log in to Instagram in a browser on the machine that runs the bot. Use a secondary account, because automated downloads can get an account flagged.
-2. Put that browser in `.env`, for example `IG_COOKIES_FROM_BROWSER=chrome`, and restart the bot. (Or export a `cookies.txt` and set `IG_COOKIES_FILE`.)
+2. Put that browser in `.env`, for example `IG_COOKIES_FROM_BROWSER=chrome` (or `edge`, `"chrome:Profile 2"`, …), and restart the bot.
+
+**Or give the bot its own login with a cookies file.** This lets you log in and out of the account anywhere else without breaking the bot, and it also works on a server:
+
+1. Install the **Get cookies.txt LOCALLY** extension (by kairi003, from the Chrome Web Store; it works in Edge too) and allow it in Incognito/InPrivate windows.
+2. In an Incognito/InPrivate window, log in to the account on instagram.com, click the extension and choose **Export** (Netscape format). Don't use *Export All Cookies*.
+3. Close the window **without logging out**, move the file to `cookies.txt` in this folder (it's git-ignored), and set `IG_COOKIES_FILE=/full/path/to/cookies.txt` in `.env`.
+
+The login lasts until it expires (about a year), you change the password, you log out of all sessions, or Instagram flags the account. Then export a new file.
 
 Stories of private accounts only work if that account follows them. Stories disappear after 24 hours, so old story links stop working.
 
@@ -94,5 +106,5 @@ Only download content you have the right to use.
 src/bot.js        Telegram handlers, caching, captions, albums
 src/instagram.js  link parsing, share links, yt-dlp download
 src/frames.js     ffmpeg screenshot extraction
-yt-dlp-plugins/   yt-dlp plugin that adds Instagram photos
+yt-dlp-plugins/   yt-dlp plugin: Instagram photos + stories fix
 ```

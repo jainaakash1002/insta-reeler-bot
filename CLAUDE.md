@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -49,7 +49,7 @@ The code is split into four parts:
 | `h-<id>` | A whole highlight |
 | `h-<id>-<pk>` | One item of a highlight |
 
-`requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `ss:<item n>:<key>`.
+`requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `s1:<item n>:<key>` (one screenshot) or `ss:<item n>:<key>` (all `SCREENSHOT_COUNT`), matched by `SCREENSHOT_DATA`.
 
 **Link parsing.** `parseInstagramLink` takes the first instagram.com or instagr.am link in a message and returns one of:
 - `{ key }` for something downloadable.
@@ -62,32 +62,44 @@ The code is split into four parts:
 
 **yt-dlp contract (`downloadMedia`).**
 - A single call downloads every item into `<dir>/<id>.<ext>`. `--print after_move:%(.{ITEM_FIELDS})j` prints one JSON line per item. To use a new yt-dlp field, add it to `ITEM_FIELDS`.
-- A non-zero exit with some JSON already printed means some items failed. The ones that downloaded are kept.
+- A non-zero exit, or the 10-minute timeout, with some JSON already printed means some items failed. The ones that finished are kept, and the result is marked `partial: true`. `deliver` then tells the user that some items are missing.
 - Zero items throws an error with `code: 'NO_MEDIA'` (for example, an expired story).
 - An item is a photo or a video depending on its file extension.
 
-**The photo plugin** (`yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py`). yt-dlp's Instagram extractors return only videos, and its story extractor drops photo items. The plugin uses yt-dlp's `plugin_name=` override mechanism on `InstagramIE` and `InstagramStoryIE` and wraps `_extract_product_media`. When an item has no video formats, it adds one `photo` format (the largest image candidate). The bot's format selector ends in `/photo` so that format gets picked.
+**The yt-dlp plugin** (`yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py`). It uses yt-dlp's `plugin_name=` override mechanism on `InstagramIE` and `InstagramStoryIE` and makes two fixes:
+- **Photos.** yt-dlp's Instagram extractors return only videos, and its story extractor drops photo items. The plugin wraps `_extract_product_media`: when an item has no video formats, it adds one `photo` format (the largest image candidate). The bot's format selector ends in `/photo` so that format gets picked.
+- **Stories.** yt-dlp loads the story page, then calls `/api/v1/feed/reels_media/`. As of November 2026 Instagram answers that call with HTTP 500, so yt-dlp reports a misleading "You need to log in". The logged-in story page already embeds the same data. The plugin wraps `_download_webpage` to remember the page, and wraps `_download_json` to answer an empty `reels_media` result from that page, so yt-dlp's own story logic (single item, highlights, `_extract_product`) runs unchanged. The data is under `xdt_api__v1__feed__reels_media.reels_media[]` for a user's stories and `xdt_api__v1__feed__reels_media__connection.edges[].node` for highlights. Highlight items lack `user.username`, so the reel's `user` is merged into each item. If Instagram fixes the endpoint, the API result wins again automatically.
 
-This depends on yt-dlp internals. If photos stop working after a yt-dlp update, check that `_extract_product_media` still exists in `yt_dlp/extractor/instagram.py`. `--plugin-dirs` points at the folder *containing* plugin packages (`yt-dlp-plugins/`), not at `yt_dlp_plugins/` itself.
+This depends on yt-dlp internals and Instagram's page format. If photos or stories stop working after an update, check that `_extract_product_media` still exists in `yt_dlp/extractor/instagram.py`, and save the story page to look at it: `yt-dlp --write-pages --cookies … <story url>` writes it to a `.dump` file in the current directory. To debug requests, use `--print-traffic`, but filter out cookie and token headers before showing the output to anyone. `--plugin-dirs` points at the folder *containing* plugin packages (`yt-dlp-plugins/`), not at `yt_dlp_plugins/` itself.
 
 **Request flow.** A text message is parsed, then `sendMedia` resolves share links and checks for a login on story keys. It then calls `getMedia(key)` and `deliver`:
 - **One item:** sent as a single photo or video, with the caption and, for a video, the screenshot button.
-- **Several items:** sent as albums of up to 10, with the caption on the first item. A chunk with a single item is sent on its own, because Telegram albums need at least 2 items. A follow-up message lists skipped oversize items (over 50 MB for a video, 10 MB for a photo) and carries one screenshot button per video.
+- **Several items:** sent as albums of up to 10, with the caption on the first item. A chunk with a single item is sent on its own, because Telegram albums need at least 2 items. A follow-up message lists skipped oversize items (over 50 MB for a video, 10 MB for a photo) and carries the screenshot buttons, one row per video.
 
-The button handler calls `getMedia` again, then runs `extractFrames` on item `n`.
+Videos in stories and highlights (`needsLogin(key)`) get two buttons: **1 screenshot** (`s1:`, one frame from the middle) and **all N** (`ss:`). Reels and posts get only the **N screenshots** button (`ss:`). The handler calls `getMedia` again, runs `extractFrames` on item `n`, then `dropRepeats`. `dropRepeats` compares 32×32 grayscale versions of the frames and drops any frame that looks like the previous kept one; the threshold was measured on real videos (see `frames.js`). After any screenshot request, `planButtonCleanup`/`applyButtonCleanup` clean up the pressed message: **1 screenshot** deletes the whole message (even the video itself); **all N** removes that video's buttons, and deletes the message only if it is a text message with no buttons left.
+
+**Screenshots (`frames.js`).** Two things went wrong here before:
+- **Color range.** Recent ffmpeg (9.x) refuses to write limited-range ("tv") frames as JPEG, which is most videos. The fix is `-vf scale=out_range=full -strict unofficial`; don't drop either part.
+- **Missing frames.** Some Instagram videos are 1-fps slideshows made from photo stories. When no frame starts after the requested time (usually the last slice), ffmpeg exits 0 and writes nothing. `grabFrame` checks that the file exists and retries at the start of the slice. Frames that still fail are skipped, and only an empty result throws.
+
+**Error messages.** Errors carry a `source` (`'yt-dlp'` from `downloadMedia`, `'ffmpeg'` from `extractFrames`). `describeError` only blames Instagram (expired story, login, private post) for `source: 'yt-dlp'`. "Not installed" is reserved for `ENOENT` from a spawn, not from a missing file.
+
+**Re-sending media.** A photo or video message sent or forwarded to the bot is sent back by `file_id` (the largest photo size), with no caption. Telegram reuses the file, so nothing is downloaded or uploaded. Photos and videos from the same chat are collected for `COLLECT_MS` (1.5 s after the last one) in `pendingMedia`, then `resendMedia` sends them in the order sent, as albums of up to 10. After every album is sent, it deletes the originals with `deleteMessages`; if a send fails, they stay.
+
+**Cleaning up the user's link.** `deliver` returns true when every item was sent. `sendMedia` then deletes the user's link message (bots may delete incoming messages in private chats; in groups this needs admin rights and fails silently). After an error, a partial download or a skipped oversize item, the link message stays.
 
 **Handlers are fire-and-forget on purpose.** `sendMedia` and `sendScreenshots` are started without `await`, so grammY's sequential update processing isn't blocked by a long download. Each one catches its own errors and reports them in the chat through `describeError(err, key)`.
 
 **Rate limiting.** A grammY API transformer retries any call that gets a 429 response, waiting `retry_after` each time, up to 3 attempts. Sending many albums of stories in a row triggers this.
 
 **Download cache (`getMedia` / `loadOrDownload` / `pruneCache`):**
-- On disk at `os.tmpdir()/insta-reel-bot/<key>/`, holding the item files and a `meta.json` (`{ author, description, items: [{ file, kind, width, height, duration, size }] }`).
+- On disk at `os.tmpdir()/insta-reel-bot/<key>/`, holding the item files and a `meta.json` (`{ author, description, partial, items: [{ file, kind, width, height, duration, size }] }`).
 - `inFlight` dedupes concurrent requests for the same key.
 - The TTL (1 h) is based on the directory mtime, which a cache hit refreshes. The pruner skips in-flight keys.
 - To test edge cases (oversize items, more than 10 items) without Instagram, edit or write a cached `meta.json`.
 
 **Other Telegram limits in `bot.js`:**
-- 1024-character captions: the description is truncated to `CAPTION_TEXT_LIMIT` (850).
+- Captions are deliberately short: `👤 @username` linking to the profile (`media.username`, from yt-dlp's `channel`), then `🔗 Open on Instagram` linking to the post or story. The post's own text isn't included.
 - Captions use `parse_mode: 'HTML'`, so every interpolated value must go through `escapeHtml`.
 - 100 buttons per inline keyboard.
 
