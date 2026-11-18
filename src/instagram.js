@@ -156,11 +156,13 @@ export async function resolveShareLink(url) {
   return null;
 }
 
+/* COOKIES PAUSED: the Instagram login isn't used at all for now.
 function cookieArgs() {
   if (process.env.IG_COOKIES_FILE) return ['--cookies', process.env.IG_COOKIES_FILE];
   if (process.env.IG_COOKIES_FROM_BROWSER) return ['--cookies-from-browser', process.env.IG_COOKIES_FROM_BROWSER];
   return [];
 }
+*/
 
 /**
  * Downloads everything `key` points at into `dir`: one item for a reel or single
@@ -172,6 +174,33 @@ export async function downloadMedia(key, dir) {
   const request = requestFor(key);
   if (!request) throw new Error(`Not a valid media key: ${key}`);
 
+  // COOKIES PAUSED (November 2026): Instagram suspended the account behind the cookies,
+  // so nothing uses the login. Stories and highlights can't download without it, so
+  // they're refused; posts and reels download anonymously. To turn the login back on,
+  // search the code for "COOKIES PAUSED" and restore each spot.
+  if (request.story) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
+  return runYtdlp(key, request, dir);
+
+  /* COOKIES PAUSED: the routing with the login.
+  // Stories and highlights need the login. Posts and reels go without it first:
+  // as of November 2026, Instagram answers yt-dlp's logged-in post request with
+  // HTTP 400, while the anonymous one works. The login is tried only when the
+  // anonymous download fails, e.g. for a private account's post.
+  if (request.story || !hasLogin()) return runYtdlp(key, request, dir, request.story);
+  try {
+    return await runYtdlp(key, request, dir, false);
+  } catch (anonymousErr) {
+    try {
+      return await runYtdlp(key, request, dir, true);
+    } catch (loginErr) {
+      console.error(`[${key}] with the Instagram login:`, loginErr.stderr || loginErr.message);
+      throw anonymousErr; // says why the post isn't public, which is the more useful message
+    }
+  }
+  */
+}
+
+async function runYtdlp(key, request, dir /* COOKIES PAUSED: , withLogin */) {
   let stdout;
   let partial = false;
   try {
@@ -187,7 +216,7 @@ export async function downloadMedia(key, dir) {
         '-o', path.join(dir, '%(id)s.%(ext)s'),
         '--print', `after_move:%(.{${ITEM_FIELDS}})j`,
         ...request.args,
-        ...cookieArgs(),
+        // COOKIES PAUSED: ...(withLogin ? cookieArgs() : []),
         '--',
         request.url,
       ],

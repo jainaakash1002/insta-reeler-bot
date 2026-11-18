@@ -31,6 +31,10 @@ const LOGIN_HELP =
   'Stories and highlights only download with an Instagram login. ' +
   'Set IG_COOKIES_FROM_BROWSER=chrome (or your browser) in the bot’s .env file and restart it. See the README.';
 
+// COOKIES PAUSED: sent for story and highlight links while the Instagram login is turned off
+const STORIES_PAUSED =
+  '⏸ Stories and highlights are turned off for now. Reels, posts and carousels still work, so send one of those.';
+
 const bot = new Bot(BOT_TOKEN);
 
 // Telegram answers 429 when a bot sends too fast, e.g. several albums of stories in a
@@ -205,6 +209,7 @@ function describeError(err, key) {
     return 'yt-dlp or ffmpeg is not installed on the machine running the bot.';
   }
   if (err?.code === 'NEEDS_LOGIN') return LOGIN_HELP;
+  if (err?.code === 'STORIES_PAUSED') return STORIES_PAUSED; // COOKIES PAUSED
   if (err?.code === 'SHARE_LINK') {
     return "I couldn't open that share link. Open it in a browser and send me the instagram.com link it lands on.";
   }
@@ -230,8 +235,8 @@ function describeError(err, key) {
   if (/login|rate.?limit|cookies|private|not available|restricted|\b40[13]\b/i.test(detail)) {
     return (
       "Instagram didn't return this post. It may be private or deleted, the link may be wrong, " +
-      "or Instagram wants a login. If it opens fine in a logged-out browser, try again in a minute. " +
-      'If public posts keep failing, set up Instagram cookies (see README).'
+      "or Instagram wants a login. If it opens fine in a logged-out browser, try again in a minute."
+      // COOKIES PAUSED: + ' If public posts keep failing, set up Instagram cookies (see README).'
     );
   }
   return "Couldn't get that. Check the link and try again.";
@@ -249,15 +254,17 @@ bot.use(async (ctx, next) => {
 
 bot.command(['start', 'help'], (ctx) =>
   ctx.reply(
-    'Send me an Instagram link and I’ll send what’s in it back here:\n' +
-      '• reels and video posts\n' +
-      '• photo posts and carousels (all photos and videos)\n' +
-      '• stories, a user’s current stories (instagram.com/stories/username) and highlights' +
-      (hasLogin() ? '' : ' (needs an Instagram login set up in the bot’s .env)') +
-      '\n\n' +
-      'You can also send or forward me any photo or video: I’ll send it back without its caption.\n\n' +
-      `Under each video, tap “📸 1 screenshot” for one frame or “📸 all ${SCREENSHOT_COUNT}” for frames spread across it. ` +
-      'If the video is just a still picture (like a photo story with music), you get one screenshot.\n\n' +
+    '👋 Send me an Instagram link and I’ll send it back here.\n\n' +
+      '✅ Works now\n' +
+      '• Reels and videos\n' +
+      '• Photo posts and carousels (every photo and video in them)\n' +
+      `• Screenshots: tap “📸 Get ${SCREENSHOT_COUNT} screenshots” under a video\n` +
+      '• Send or forward me a photo or video and I’ll send it back without its caption\n\n' +
+      // COOKIES PAUSED: when stories are back, move Stories and Highlights up to "Works now",
+      // drop this section, and mention the "📸 1 screenshot" button that story videos get.
+      '⏸ Not working right now\n' +
+      '• Stories\n' +
+      '• Highlights\n\n' +
       `Your Telegram user ID: ${ctx.from?.id}`,
   ),
 );
@@ -321,7 +328,8 @@ bot.on('message:text', (ctx) => {
         '(in the app: Share → Copy link).',
     );
   }
-  if (link.key && needsLogin(link.key) && !hasLogin()) return ctx.reply(LOGIN_HELP);
+  if (link.key && needsLogin(link.key)) return ctx.reply(STORIES_PAUSED);
+  // COOKIES PAUSED: if (link.key && needsLogin(link.key) && !hasLogin()) return ctx.reply(LOGIN_HELP);
   // Not awaited, so the bot keeps answering other messages while this one downloads.
   sendMedia(ctx, link).catch((err) => console.error(`[${link.key ?? link.share}] sendMedia failed:`, err));
 });
@@ -338,7 +346,8 @@ async function sendMedia(ctx, link) {
       return null;
     });
     if (!key) throw Object.assign(new Error(`Share link led nowhere: ${link.share}`), { code: 'SHARE_LINK' });
-    if (needsLogin(key) && !hasLogin()) throw Object.assign(new Error('Login needed'), { code: 'NEEDS_LOGIN' });
+    if (needsLogin(key)) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
+    // COOKIES PAUSED: if (needsLogin(key) && !hasLogin()) throw Object.assign(new Error('Login needed'), { code: 'NEEDS_LOGIN' });
 
     const media = await getMedia(key);
     const complete = await deliver(ctx, key, media);
@@ -471,6 +480,7 @@ bot.start({
     console.log(
       `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram link.` +
         (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
-        (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
+        ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
+      // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
     ),
 });

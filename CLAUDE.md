@@ -18,6 +18,7 @@ npm run dev        # same, with --watch (restarts on file changes)
 - Requires a recent `yt-dlp` (it must support `--plugin-dirs`), plus `ffmpeg` and `ffprobe`. They must be on `PATH` (`brew install yt-dlp ffmpeg`) or set through `YTDLP_PATH`, `FFMPEG_PATH` and `FFPROBE_PATH`.
 - Config comes from `.env` (copy `.env.example`). `BOT_TOKEN` is required; the bot exits at startup if it is missing or Telegram rejects it.
 - Stories and highlights need Instagram cookies (`IG_COOKIES_FROM_BROWSER` or `IG_COOKIES_FILE`). Reels and posts download anonymously.
+- **The Instagram login is turned off for now (November 2026).** Instagram suspended the account behind the cookies. All code that uses them is commented out and tagged `COOKIES PAUSED`, in `src/instagram.js` (`cookieArgs`, the login routing in `downloadMedia`) and `src/bot.js` (the login checks and messages). Even if `.env` has cookies, nothing passes them to yt-dlp. Story and highlight links get the `STORIES_PAUSED` message, and `downloadMedia` throws `code: 'STORIES_PAUSED'` for story keys. To turn the login back on with cookies from a working account, search for `COOKIES PAUSED`, restore the commented code and remove the paused lines next to it.
 - There are **no tests, linter or formatter**. To check changes without Telegram:
   - Syntax: `for f in src/*.js; do node --check "$f"; done`
   - Link parsing: `node -e "import('./src/instagram.js').then(m => console.log(m.parseInstagramLink('https://www.instagram.com/reel/ABC123xyz/')))"`
@@ -65,6 +66,8 @@ The code is split into four parts:
 - A non-zero exit, or the 10-minute timeout, with some JSON already printed means some items failed. The ones that finished are kept, and the result is marked `partial: true`. `deliver` then tells the user that some items are missing.
 - Zero items throws an error with `code: 'NO_MEDIA'` (for example, an expired story).
 - An item is a photo or a video depending on its file extension.
+- **When the login is used.** Stories and highlights always run with the cookies (`cookieArgs`). Posts and reels run without them first, and `runYtdlp` retries with them only if that fails (for example, a private account). The reason: as of November 2026 Instagram answers yt-dlp's logged-in post request with HTTP 400, while the anonymous one works. When both runs fail, the anonymous run's error is thrown and the login run's error is logged.
+- **A dead login looks like an Instagram error.** If the cookies' account is suspended or logged out, posts fail with `HTTP Error 400` when the login is used, and stories fail with "This content is unreachable". To check the session, request `https://www.instagram.com/accounts/edit/` with the cookies: a 200 means logged in; a redirect to `/accounts/login/` or `/accounts/suspended/` means the cookies are dead.
 
 **The yt-dlp plugin** (`yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py`). It uses yt-dlp's `plugin_name=` override mechanism on `InstagramIE` and `InstagramStoryIE` and makes two fixes:
 - **Photos.** yt-dlp's Instagram extractors return only videos, and its story extractor drops photo items. The plugin wraps `_extract_product_media`: when an item has no video formats, it adds one `photo` format (the largest image candidate). The bot's format selector ends in `/photo` so that format gets picked.
