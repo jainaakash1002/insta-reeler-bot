@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
-import { dropRepeats, extractFrames } from './frames.js';
+import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
+import { dropRepeats, ensureH264, extractFrames } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -77,7 +78,10 @@ async function loadOrDownload(key) {
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
   const media = await downloadMedia(key, dir);
-  for (const item of media.items) item.size = (await fs.stat(item.file)).size;
+  for (const item of media.items) {
+    if (isFacebook(key) && item.kind === 'video') await ensureH264(item.file);
+    item.size = (await fs.stat(item.file)).size;
+  }
   await fs.writeFile(metaFile, JSON.stringify(media));
   return { ...media, dir };
 }
@@ -101,8 +105,18 @@ async function pruneCache() {
 const escapeHtml = (text) =>
   text.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
+const isFacebook = (key) => requestFor(key)?.site === 'facebook';
+const siteName = (key) => (isFacebook(key) ? 'Facebook' : 'Instagram');
+
 /** A short caption: the account (linking to its profile) and a link to the post or story itself. */
 function buildCaption(media, key) {
+  if (isFacebook(key)) {
+    // yt-dlp gives a Facebook page's display name and numeric id; facebook.com/<id> opens the page.
+    const id = /^\d+$/.test(media.uploaderId ?? '') ? media.uploaderId : null;
+    const name = media.author && `<b>${escapeHtml(media.author)}</b>`;
+    const account = name && (id ? `👤 <a href="https://www.facebook.com/${id}">${name}</a>` : `👤 ${name}`);
+    return [account, `🔗 <a href="${escapeHtml(requestFor(key).url)}">Open on Facebook</a>`].filter(Boolean).join('\n');
+  }
   // `username` is new; older cached downloads only have `author` ("@name" or a full name).
   const username = media.username ?? media.author?.match(/^@(\w[\w.]*)$/)?.[1];
   const account = username
@@ -210,6 +224,9 @@ function describeError(err, key) {
   }
   if (err?.code === 'NEEDS_LOGIN') return LOGIN_HELP;
   if (err?.code === 'STORIES_PAUSED') return STORIES_PAUSED; // COOKIES PAUSED
+  if (err?.code === 'SHARE_LINK' && err.site === 'facebook') {
+    return "I couldn't find a video behind that Facebook link. Open it in a browser and send me the link of the video it shows.";
+  }
   if (err?.code === 'SHARE_LINK') {
     return "I couldn't open that share link. Open it in a browser and send me the instagram.com link it lands on.";
   }
@@ -219,17 +236,31 @@ function describeError(err, key) {
   // Only blame Instagram (expired story, login, private post) for errors that came from yt-dlp.
   if (err?.source === 'ffmpeg') return "Couldn't grab screenshots from that video. Try again, or try another video.";
   if (err?.error_code && err?.description) return `Telegram didn't accept it: ${err.description}`; // GrammyError
-  if (err?.source !== 'yt-dlp') return 'Something went wrong on my side. Try again in a bit.';
+  if (err?.source !== 'yt-dlp' && err?.source !== 'facebook') return 'Something went wrong on my side. Try again in a bit.';
 
   if (/no such option: --plugin-dirs/i.test(detail)) {
     return 'yt-dlp on the machine running the bot is too old. Update it: brew upgrade yt-dlp';
   }
-  if (err.killed) return 'Instagram took too long to respond. Try again in a bit.';
+  if (err.killed) return `${siteName(key)} took too long to respond. Try again in a bit.`;
+  if (isFacebook(key)) {
+    return (
+      "Facebook didn't return this. It may be private, deleted or only visible to logged-in " +
+      'users, or Facebook changed something. If it opens in a logged-out browser, try again in a minute.'
+    );
+  }
   if (story) {
     return (
       "Couldn't get that story. It may have expired (stories last 24 hours), or the account is private " +
       "and the Instagram login the bot uses doesn't follow it. If no stories work, the login may have " +
       'expired: log in to Instagram again in that browser.'
+    );
+  }
+  // Age-restricted or "sensitive" posts: Instagram says "This content isn't available to
+  // everyone: It can't be seen by certain audiences" and only shows them to logged-in adults.
+  if (/available to everyone|certain audiences/i.test(detail)) {
+    return (
+      'Instagram only shows this post to logged-in accounts (it’s age-restricted or marked sensitive), ' +
+      'so I can’t download it.'
     );
   }
   if (/login|rate.?limit|cookies|private|not available|restricted|\b40[13]\b/i.test(detail)) {
@@ -254,10 +285,11 @@ bot.use(async (ctx, next) => {
 
 bot.command(['start', 'help'], (ctx) =>
   ctx.reply(
-    '👋 Send me an Instagram link and I’ll send it back here.\n\n' +
+    '👋 Send me an Instagram or Facebook link and I’ll send it back here.\n\n' +
       '✅ Works now\n' +
-      '• Reels and videos\n' +
-      '• Photo posts and carousels (every photo and video in them)\n' +
+      '• Instagram reels and videos\n' +
+      '• Instagram photo posts and carousels (every photo and video in them)\n' +
+      '• Facebook videos, reels, posts and photos (public ones)\n' +
       `• Screenshots: tap “📸 Get ${SCREENSHOT_COUNT} screenshots” under a video\n` +
       '• Send or forward me a photo or video and I’ll send it back without its caption\n\n' +
       // COOKIES PAUSED: when stories are back, move Stories and Highlights up to "Works now",
@@ -311,6 +343,7 @@ async function resendMedia(chatId, items) {
     // All copies are in the chat: remove the originals the user sent or forwarded.
     // (Only after full success; if sending failed above, they stay.)
     await bot.api.deleteMessages(chatId, items.map((item) => item.order)).catch(() => {});
+    console.log(`Re-sent ${items.length} photo(s)/video(s) in chat ${chatId}`);
   } catch (err) {
     console.error('Re-sending media failed:', err?.description ?? err);
     await bot.api.sendMessage(chatId, `❌ ${describeError(err)}`).catch(() => {});
@@ -318,9 +351,16 @@ async function resendMedia(chatId, items) {
 }
 
 bot.on('message:text', (ctx) => {
-  const link = parseInstagramLink(ctx.message.text);
+  const link = parseInstagramLink(ctx.message.text) ?? parseFacebookLink(ctx.message.text);
   if (!link) {
-    return ctx.reply('Send me an Instagram link: a reel, post, story or highlight, like https://www.instagram.com/reel/ABC123xyz/');
+    return ctx.reply(
+      'Send me an Instagram or Facebook link, like https://www.instagram.com/reel/ABC123xyz/ or a Facebook video or reel link.',
+    );
+  }
+  if (link.unsupported && link.site === 'facebook') {
+    return ctx.reply(
+      'From Facebook I can download videos, reels, posts and photos. Send a link to one (in the app: Share → Copy link).',
+    );
   }
   if (link.unsupported) {
     return ctx.reply(
@@ -341,11 +381,12 @@ async function sendMedia(ctx, link) {
   let key = link.key;
 
   try {
-    key ??= await resolveShareLink(link.share).catch((err) => {
+    const resolve = link.site === 'facebook' ? resolveFacebookShareLink : resolveShareLink;
+    key ??= await resolve(link.share).catch((err) => {
       console.error(`[${link.share}] share link:`, err);
       return null;
     });
-    if (!key) throw Object.assign(new Error(`Share link led nowhere: ${link.share}`), { code: 'SHARE_LINK' });
+    if (!key) throw Object.assign(new Error(`Share link led nowhere: ${link.share}`), { code: 'SHARE_LINK', site: link.site });
     if (needsLogin(key)) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
     // COOKIES PAUSED: if (needsLogin(key) && !hasLogin()) throw Object.assign(new Error('Login needed'), { code: 'NEEDS_LOGIN' });
 
@@ -355,9 +396,16 @@ async function sendMedia(ctx, link) {
     // Everything arrived, so the user's link message has done its job. After an error, or if
     // some items couldn't be sent, it stays so the user can see what they asked for.
     if (complete) await ctx.deleteMessage().catch(() => {});
+    console.log(`[${key}] sent ${media.items.length} item(s) to chat ${ctx.chat.id}${complete ? '' : ' (incomplete)'}`);
   } catch (err) {
     console.error(`[${key ?? link.share}]`, err?.stderr || err);
-    await ctx.api.editMessageText(ctx.chat.id, status.message_id, `❌ ${describeError(err, key)}`).catch(() => {});
+    const text = `❌ ${describeError(err, key)}`;
+    // If the "Downloading…" message can't be edited, send the error as a new message, so the
+    // user never sees "Downloading…" with no answer.
+    await ctx.api.editMessageText(ctx.chat.id, status.message_id, text).catch(async (editErr) => {
+      console.error(`[${key ?? link.share}] couldn't edit the status message:`, editErr?.description ?? editErr);
+      await ctx.reply(text).catch((replyErr) => console.error('Could not send the error either:', replyErr?.description ?? replyErr));
+    });
   }
 }
 
@@ -374,10 +422,10 @@ async function deliver(ctx, key, media) {
   const buttons = keyboard ? { reply_markup: keyboard } : {};
   const caption = buildCaption(media, key);
   const single = items.length === 1;
-  const complete = tooBig.length === 0 && !media.partial;
+  const complete = tooBig.length === 0 && !media.partial && !media.hidden;
 
   // One reel or photo: caption and button on the same message, like Instagram shows it.
-  if (single && sendable.length === 1 && !media.partial) {
+  if (single && sendable.length === 1 && !media.partial && !media.hidden) {
     await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
     return complete;
   }
@@ -390,7 +438,13 @@ async function deliver(ctx, key, media) {
       `over Telegram’s ${megabytes(UPLOAD_LIMIT[item.kind])} limit for bots, so I can’t send it.`,
   );
   if (media.partial) {
-    notes.push('⚠️ Some items couldn’t be downloaded (Instagram refused them or it took too long), so this isn’t all of it.');
+    notes.push(`⚠️ Some items couldn’t be downloaded (${siteName(key)} refused them or it took too long), so this isn’t all of it.`);
+  }
+  if (media.hidden) {
+    notes.push(
+      `⚠️ This post has ${items.length + media.hidden} items, but Facebook shows only ${items.length} ` +
+        'to visitors who aren’t logged in, so the rest are missing.',
+    );
   }
   if (keyboard) {
     if (single && !sendable.length) notes.push('I can still grab screenshots from it.');
@@ -446,6 +500,7 @@ async function sendScreenshots(ctx, key, n, count) {
     const sendOptions = cleanup?.deleteMessage ? {} : replyOptions;
     await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), { caption, parse_mode: 'HTML' }, sendOptions);
     if (cleanup) await applyButtonCleanup(ctx, cleanup);
+    console.log(`[${key}] sent ${frames.length} screenshot(s) of item ${n}`);
   } catch (err) {
     console.error(`[${key}]`, err?.stderr || err);
     await ctx.reply(`❌ ${describeError(err, key)}`, replyOptions).catch(() => {});
@@ -478,7 +533,7 @@ process.once('SIGTERM', () => bot.stop());
 bot.start({
   onStart: (me) =>
     console.log(
-      `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram link.` +
+      `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram or Facebook link.` +
         (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
         ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
       // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),

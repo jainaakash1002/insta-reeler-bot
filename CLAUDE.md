@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -36,8 +36,9 @@ npm run dev        # same, with --watch (restarts on file changes)
 
 The code is split into four parts:
 - `src/bot.js`: Telegram handlers, the download cache, captions and album sending.
-- `src/instagram.js`: link parsing, share-link resolution and running `yt-dlp`.
-- `src/frames.js`: `ffprobe` and `ffmpeg`.
+- `src/instagram.js`: Instagram link parsing, `KEY_TYPES`/`requestFor` for every site, share-link resolution and running `yt-dlp`.
+- `src/facebook.js`: Facebook link parsing, share-link resolution, and reading post and photo pages (photos are downloaded here, without yt-dlp).
+- `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots and `ensureH264`).
 - `yt-dlp-plugins/`: the yt-dlp plugin.
 
 **Keys.** Everything downloadable is identified by a key string. The key is the cache folder name and travels in screenshot-button callback data. `KEY_TYPES` in `instagram.js` defines the formats:
@@ -49,6 +50,9 @@ The code is split into four parts:
 | `u-<user>` | All of a user's current stories |
 | `h-<id>` | A whole highlight |
 | `h-<id>-<pk>` | One item of a highlight |
+| `f-<video id>` | A Facebook video or reel (`site: 'facebook'`) |
+| `fp-<page>-<post id>` | A Facebook post: photos and/or videos (page is a numeric id or username) |
+| `fph-<photo id>` | One Facebook photo (`photo.php?fbid=`) |
 
 `requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `s1:<item n>:<key>` (one screenshot) or `ss:<item n>:<key>` (all `SCREENSHOT_COUNT`), matched by `SCREENSHOT_DATA`.
 
@@ -58,6 +62,25 @@ The code is split into four parts:
 - `{ unsupported: true }` for profiles, audio pages and similar.
 
 `/s/<base64>` links decode to `highlight:<id>`. The `story_media_id` query parameter selects one item.
+
+The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), which returns the same shapes with `site: 'facebook'` on share and unsupported results.
+
+**Facebook.**
+- **Links.** Every video and reel link (`watch/?v=`, `watch/live/?v=`, `video.php?v=`, `reel/<id>`, `<page>/videos/[slug|vb.n/]<id>`) becomes `f-<numeric id>`. `requestFor` always rebuilds `https://www.facebook.com/watch/?v=<id>`, which yt-dlp handles for reels too.
+- **Share links.** `fb.watch/<code>` and `facebook.com/share/[v|r|p/]<code>` go through `resolveFacebookShareLink`, a redirect loop like Instagram's `resolveShareLink`. It uses `node:https`, not `fetch`, because Facebook answers these links with HTTP 400 unless the request sends `Sec-Fetch-Mode: navigate`, and Node's `fetch` always overwrites that header with `cors`.
+- **Posts.** `story.php`/`permalink.php?story_fbid=<n>&id=<n>` and `/<page>/posts/<n>` become `fp-<page>-<post>`, and the URL is rebuilt as `/<page>/posts/<post>/`. Many `share/…` links redirect to `story.php`. yt-dlp only downloads videos and can't parse some post pages, so `downloadFacebookPost` (`instagram.js`) first reads the logged-out post page with `readFacebookPost` (`facebook.js`):
+  - **What it reads.** The page embeds JSON in `<script type="application/json">` tags. The post is the object under the key `node_v2` whose `post_id` matches. Its `attachments[].styles.attachment` has either `all_subattachments.nodes[].media` (several items, full image in `viewer_image.uri`) or `media` (one item: `photo_image.uri`, with the size in `viewer_image`). Only the post's own `node_v2` is used, because comments carry their own attachments deeper in the page. An earlier version scanned the whole page and sent a comment's video.
+  - **A post with any photos** is built from the page: photos are fetched directly with `downloadImage` (`*.fbcdn.net` only), videos through yt-dlp as `f-<id>`.
+  - **Other posts** go through yt-dlp, with the page's video ids as the fallback.
+  - **Hidden items.** Logged out, Facebook lists only some of a big post's items (e.g. 5 of 6), and `all_subattachments.count` gives the real total. The result carries `hidden: <missing count>`, and `deliver` adds a note. The photo viewer can't reach the rest: logged out, its `nextMedia` walks the page's album, not the post.
+- **`pfbid…` post links** are too long for callback data. They parse as `{ share, pfbid: true }`, and `resolveFacebookShareLink` reads the page for the numeric `post_id` and the actor id, giving `fp-<actor id>-<post id>`. The same happens for numeric posts under a page name too long for a key.
+- **Single photos.** `photo.php?fbid=<n>`, `/photo/?fbid=<n>` and `/<page>/photos/<album>/<n>` become `fph-<n>`. `readFacebookPhoto` takes `currMedia.image` (full size) and the owner from `currMedia.container_story.actors`.
+- `fetchPage` follows up to 3 redirects within `www.facebook.com`, for example a video post that redirects to `/<page>/videos/…`. Page-reading errors carry `source: 'facebook'`, which `describeError` treats like yt-dlp errors.
+- **Unsupported.** Profiles, groups and private content.
+- **Quality.** Downloads add `-S res:720`, so long videos stay under the 50 MB upload limit.
+- **Codec.** Facebook often serves only VP9, which Telegram on iOS doesn't play inline. `loadOrDownload` runs `ensureH264` (`frames.js`) on Facebook videos before caching: it probes the codec, re-encodes to H.264 when needed, and keeps the original if that fails. Instagram videos are never touched.
+- **Captions and errors.** `buildCaption` and `describeError` branch on `isFacebook(key)`. The caption is `👤 <page name>` linking to `facebook.com/<uploader_id>`, then `Open on Facebook`. Instagram's captions and messages are unchanged.
+- **Downloader quirk.** Some Facebook videos fail inside yt-dlp with "Cannot parse data". That is a yt-dlp extractor issue; updating yt-dlp is the fix.
 
 **Security invariant.** User text never reaches a subprocess. Only validated parts (shortcode `[\w-]+`, username `\w[\w.]*`, numeric IDs) go into keys, and `requestFor` builds the URL from the key. Subprocesses use `execFile` (no shell), and the URL comes after `--`. The callback-query regex and `requestFor` validate keys again when a button is pressed. Keep all of this intact when changing parsing or download code.
 

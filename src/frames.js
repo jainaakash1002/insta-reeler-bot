@@ -119,3 +119,50 @@ export async function dropRepeats(frames) {
     return frames;
   }
 }
+
+const TRANSCODE_TIMEOUT_MS = 10 * 60 * 1000;
+
+async function videoCodec(videoPath) {
+  const { stdout } = await run(FFPROBE, [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=codec_name',
+    '-of', 'csv=p=0',
+    videoPath,
+  ]);
+  return stdout.trim();
+}
+
+/**
+ * Re-encodes a video to H.264 in place unless it already is. Facebook often serves only
+ * VP9, which Telegram's iPhone app can't play inline. On failure the original is kept
+ * (a warning is logged), since an odd codec is better than no video.
+ */
+export async function ensureH264(videoPath) {
+  const temp = `${videoPath}.h264.mp4`;
+  try {
+    if ((await videoCodec(videoPath)) === 'h264') return;
+    await run(
+      FFMPEG,
+      [
+        '-y',
+        '-loglevel', 'error',
+        '-i', videoPath,
+        '-map', '0:v:0',
+        '-map', '0:a:0?', // the audio, if there is any
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p', // the most widely playable H.264
+        '-c:a', 'copy',
+        '-movflags', '+faststart', // lets Telegram start playing before the whole file arrives
+        temp,
+      ],
+      { timeout: TRANSCODE_TIMEOUT_MS },
+    );
+    await fs.rename(temp, videoPath);
+  } catch (err) {
+    console.warn(`Could not convert ${videoPath} to H.264; sending it as it is:`, err?.stderr || err?.message || err);
+    await fs.rm(temp, { force: true });
+  }
+}

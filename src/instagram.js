@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { downloadImage, readFacebookPhoto, readFacebookPost } from './facebook.js';
 
 const run = promisify(execFile);
 
@@ -19,7 +20,7 @@ const DIGITS = /^\d+$/;
 const POST_PATHS = new Set(['p', 'reel', 'reels', 'tv']);
 
 // Fields yt-dlp prints for each downloaded item (filepath is where it was saved).
-const ITEM_FIELDS = 'filepath,id,ext,width,height,duration,description,channel,uploader';
+const ITEM_FIELDS = 'filepath,id,ext,width,height,duration,description,channel,uploader,uploader_id';
 const PHOTO_EXT = /^(jpe?g|png|webp|heic)$/i;
 
 /*
@@ -33,6 +34,9 @@ const PHOTO_EXT = /^(jpe?g|png|webp|heic)$/i;
  *   u-<username>             all of a user's current stories
  *   h-<highlight id>         a whole highlight
  *   h-<highlight id>-<pk>    one item of a highlight
+ *   f-<video id>             a Facebook video or reel (parsed in facebook.js)
+ *   fp-<page>-<post id>      a Facebook post: photos and/or videos (page: numeric id or username)
+ *   fph-<photo id>           one Facebook photo
  */
 const KEY_TYPES = [
   [/^p-([\w-]+)$/, ([, code]) => ({ url: `https://www.instagram.com/p/${code}/` })],
@@ -53,13 +57,32 @@ const KEY_TYPES = [
       story: true,
     }),
   ],
+  [
+    /^f-(\d{1,25})$/,
+    // Facebook reels are videos too: watch/?v=<id> opens either. At most 720p, so more videos
+    // fit Telegram's 50 MB limit for bots (Facebook videos can be hours long).
+    ([, id]) => ({ url: `https://www.facebook.com/watch/?v=${id}`, args: ['-S', 'res:720'], site: 'facebook' }),
+  ],
+  [
+    /^fp-([\w.]{1,30})-(\d{1,25})$/,
+    ([, page, post]) => ({
+      url: `https://www.facebook.com/${page}/posts/${post}/`,
+      args: ['-S', 'res:720'],
+      site: 'facebook',
+      postId: post,
+    }),
+  ],
+  [
+    /^fph-(\d{1,25})$/,
+    ([, id]) => ({ url: `https://www.facebook.com/photo.php?fbid=${id}`, site: 'facebook', photoId: id }),
+  ],
 ];
 
-/** Returns { url, args, story } for a valid key, or null. */
+/** Returns { url, args, story, site } for a valid key, or null. `site` is 'instagram' or 'facebook'. */
 export function requestFor(key) {
   for (const [pattern, build] of KEY_TYPES) {
     const match = key?.match(pattern);
-    if (match) return { args: [], story: false, ...build(match) };
+    if (match) return { args: [], story: false, site: 'instagram', ...build(match) };
   }
   return null;
 }
@@ -179,6 +202,8 @@ export async function downloadMedia(key, dir) {
   // they're refused; posts and reels download anonymously. To turn the login back on,
   // search the code for "COOKIES PAUSED" and restore each spot.
   if (request.story) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
+  if (request.postId) return downloadFacebookPost(key, request, dir);
+  if (request.photoId) return downloadFacebookPhoto(key, request, dir);
   return runYtdlp(key, request, dir);
 
   /* COOKIES PAUSED: the routing with the login.
@@ -198,6 +223,76 @@ export async function downloadMedia(key, dir) {
     }
   }
   */
+}
+
+const facebookError = (message, extra) => Object.assign(new Error(message), { source: 'facebook', ...extra });
+
+/**
+ * A Facebook post. yt-dlp only downloads videos, and can't parse some post pages at all,
+ * so the post's page is read first (facebook.js). A post with photos is downloaded from
+ * that: photos directly, videos by id through yt-dlp. A video-only post goes through
+ * yt-dlp, with the page's video ids as the fallback.
+ */
+async function downloadFacebookPost(key, request, dir) {
+  const post = await readFacebookPost(request.url, request.postId).catch((err) => {
+    console.warn(`[${key}] couldn't read the post page:`, err.message);
+    return null;
+  });
+  if (post?.items.some((item) => item.kind === 'photo')) return downloadPostItems(key, post, dir);
+  try {
+    return await runYtdlp(key, request, dir);
+  } catch (postErr) {
+    if (postErr.source !== 'yt-dlp' || postErr.killed || !post?.items.length) throw postErr;
+    console.warn(`[${key}] yt-dlp couldn't read the post; downloading its videos by id`);
+    return downloadPostItems(key, post, dir);
+  }
+}
+
+/** Downloads a post's items (from readFacebookPost) in order. A failed item makes the result partial. */
+async function downloadPostItems(key, post, dir) {
+  const items = [];
+  let partial = false;
+  for (const [i, item] of post.items.entries()) {
+    try {
+      if (item.kind === 'photo') {
+        const file = await downloadImage(item.url, path.join(dir, `${String(i + 1).padStart(2, '0')}-${item.id}`));
+        items.push({ file, kind: 'photo', width: item.width, height: item.height });
+      } else {
+        const video = await runYtdlp(key, requestFor(`f-${item.id}`), dir);
+        items.push(...video.items);
+        partial ||= video.partial;
+      }
+    } catch (err) {
+      console.warn(`[${key}] item ${i + 1} failed:`, err.stderr || err.message);
+      partial = true;
+    }
+  }
+  if (items.length === 0) throw facebookError(`Nothing in ${key} could be downloaded`, { code: 'NO_MEDIA' });
+  return {
+    author: post.author,
+    uploaderId: post.uploaderId,
+    partial,
+    // Facebook lists only some of a big post's photos to logged-out visitors
+    hidden: Math.max(0, post.total - post.items.length),
+    items,
+  };
+}
+
+/** One Facebook photo, read from its page. */
+async function downloadFacebookPhoto(key, request, dir) {
+  const photo = await readFacebookPhoto(request.url, request.photoId).catch((err) => {
+    throw facebookError(`Couldn't read the photo page: ${err.message}`);
+  });
+  if (!photo) throw facebookError(`No photo on the page for ${key}`, { code: 'NO_MEDIA' });
+  const file = await downloadImage(photo.item.url, path.join(dir, photo.item.id)).catch((err) => {
+    throw facebookError(err.message);
+  });
+  return {
+    author: photo.author,
+    uploaderId: photo.uploaderId,
+    partial: false,
+    items: [{ file, kind: 'photo', width: photo.item.width, height: photo.item.height }],
+  };
 }
 
 async function runYtdlp(key, request, dir /* COOKIES PAUSED: , withLogin */) {
@@ -245,6 +340,7 @@ async function runYtdlp(key, request, dir /* COOKIES PAUSED: , withLogin */) {
   return {
     username: first.channel,
     author: first.channel ? `@${first.channel}` : first.uploader,
+    uploaderId: first.uploader_id, // Facebook's profile link needs it; Instagram uses `username`
     description: first.description,
     partial,
     items: items.map((item) => ({
