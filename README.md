@@ -15,6 +15,10 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 | Facebook post (`/<page>/posts/…`, `story.php?…`, including `pfbid…` links) | All its photos and videos, as albums |
 | Facebook photo (`photo.php?fbid=…`) | The photo |
 | Facebook short or share link (`fb.watch/…`, `facebook.com/share/…`) | The video it points to |
+| Snapchat Spotlight (`snapchat.com/spotlight/…`, `/@user/spotlight/…`) | The video |
+| Snapchat profile (`snapchat.com/@user`, `/add/user`) | That user's current public story, all snaps |
+| Snapchat highlight (`snapchat.com/@user/highlight/…`) | The whole highlight |
+| Reddit post (`reddit.com/r/…/comments/…`, `redd.it/…`, `v.redd.it/…`, the app's `/s/…` share links) | Its video (with sound), image, GIF (as a video) or whole gallery |
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
 
@@ -23,6 +27,10 @@ Once everything from a link has been sent, the bot deletes your message with the
 **Any photo or video you send or forward to the bot** comes back on its own: same file, no caption, no "Forwarded from" line. Several sent or forwarded together come back as one album (up to 10 per album). Once the copies are sent, the bot deletes the originals you sent or forwarded.
 
 **Facebook:** public videos, reels, posts and photos, no login. Photos are read straight from Facebook's page, since yt-dlp only downloads videos. Logged out, Facebook shows only some photos of a big post, so the bot says when some are missing. The caption shows the page's name (tap it to open the page) and an **Open on Facebook** link.
+
+**Snapchat:** public Spotlight videos, stories and highlights, no login. The bot reads snapchat.com's public pages (yt-dlp's Snapchat support is broken). Text and stickers drawn on a snap aren't included. Private snaps and friends' stories never appear on the web, so they can't be downloaded.
+
+**Reddit** needs a free API key (see [Reddit](#reddit)). The caption shows `u/<author> in r/<subreddit>` and an **Open on Reddit** link.
 
 **Stories and highlights need an Instagram login** (see [Stories and highlights](#stories-and-highlights)). Reels and posts work without one.
 
@@ -67,6 +75,7 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `SCREENSHOT_COUNT` | `6` | Frames sent per screenshot request (1–10, the max for a Telegram album). |
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
+| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | Reddit API key. Needed for Reddit links. |
 | `YTDLP_PATH`, `FFMPEG_PATH`, `FFPROBE_PATH` | on `PATH` | Only if the tools are installed somewhere unusual. |
 
 ## Stories and highlights
@@ -86,6 +95,16 @@ The login lasts until it expires (about a year), you change the password, you lo
 
 Stories of private accounts only work if that account follows them. Stories disappear after 24 hours, so old story links stop working.
 
+## Reddit
+
+Reddit blocks anonymous requests for post data from most networks (HTTP 403), so the bot reads posts through Reddit's official API. The key is free and takes two minutes:
+
+1. Go to [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) (logged in to any Reddit account) and click **create another app**.
+2. Pick **script**, give it any name, and enter `http://localhost` as the redirect uri.
+3. Put the ID (the string under the app's name) and the secret in `.env` as `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`, and restart the bot.
+
+The bot uses the key on its own (application-only access): it never logs in as your Reddit account. Without the key, Reddit links get a reply saying the key is missing. Links to other sites (YouTube, …) and text posts have nothing to download.
+
 ## When Instagram refuses downloads
 
 Public reels usually download without logging in. Instagram rate-limits anonymous requests, though, so after heavy use (or from a server IP) you may see *"Instagram didn't return this post"*. In that case:
@@ -100,6 +119,7 @@ Private posts only work if the account whose cookies you use can see them.
 - **Profile links, audio pages and other Instagram pages aren't supported.** Send a link to a reel, post, story or highlight.
 - **50 MB per video and 10 MB per photo**, the Bot API's upload limits. Reels are almost always well under them. If an item isn't, the bot says so, sends the rest and still offers screenshots.
 - **Facebook: public content only.** Profiles, groups and private posts aren't supported. A big post may come back with a few photos missing, because Facebook hides them from logged-out visitors. `fb.watch/…` and `facebook.com/share/…` links depend on Facebook redirecting them to the video; if one fails, open it in a browser and send the link of the video it shows.
+- **Reddit: only media hosted on Reddit** (v.redd.it, i.redd.it, galleries). Posts linking to YouTube, Imgur pages and other sites aren't supported, except GIFs Reddit has converted itself.
 - **Share links (`/share/…`) depend on Instagram redirecting them.** If one fails, open it in a browser and send the `instagram.com/…` link it lands on.
 - **Photos are the largest size Instagram offers** to whoever downloads them, which is sometimes smaller without a login.
 - **It runs only while `npm start` is running.** To keep it up around the clock, run it on a server (any Linux box with Node 22+, yt-dlp and ffmpeg) or under `pm2`.
@@ -113,6 +133,8 @@ Only download content you have the right to use.
 src/bot.js        Telegram handlers, caching, captions, albums
 src/instagram.js  Instagram link parsing, share links, yt-dlp download (all sites)
 src/facebook.js   Facebook link parsing, post and photo pages
+src/reddit.js     Reddit link parsing, API access, post media
+src/snapchat.js   Snapchat link parsing, Spotlight/story/highlight pages
 src/frames.js     ffmpeg screenshot extraction, H.264 conversion
 yt-dlp-plugins/   yt-dlp plugin: Instagram photos + stories fix
 ```

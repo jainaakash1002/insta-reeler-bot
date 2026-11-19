@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) through Reddit's API and public Snapchat Spotlight videos, stories and highlights. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -38,6 +38,8 @@ The code is split into four parts:
 - `src/bot.js`: Telegram handlers, the download cache, captions and album sending.
 - `src/instagram.js`: Instagram link parsing, `KEY_TYPES`/`requestFor` for every site, share-link resolution and running `yt-dlp`.
 - `src/facebook.js`: Facebook link parsing, share-link resolution, and reading post and photo pages (photos are downloaded here, without yt-dlp).
+- `src/snapchat.js`: Snapchat link parsing, reading the public pages and downloading their media.
+- `src/reddit.js`: Reddit link parsing, share-link resolution, the API token, reading a post's media and downloading images/MP4s.
 - `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots and `ensureH264`).
 - `yt-dlp-plugins/`: the yt-dlp plugin.
 
@@ -53,6 +55,11 @@ The code is split into four parts:
 | `f-<video id>` | A Facebook video or reel (`site: 'facebook'`) |
 | `fp-<page>-<post id>` | A Facebook post: photos and/or videos (page is a numeric id or username) |
 | `fph-<photo id>` | One Facebook photo (`photo.php?fbid=`) |
+| `r-<post id>` | A Reddit post (base36 id, lowercased; `site: 'reddit'`) |
+| `scu-<user>` | A Snapchat user's current public story |
+| `sch-<user>-<uuid>` | One Snapchat highlight |
+| `scs-<16-char hash>` | A Snapchat Spotlight video (the id is looked up, see below) |
+| `scn-<user>-<16-char hash>` | One snap of a Snapchat user's story (the snap id is looked up the same way) |
 
 `requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `s1:<item n>:<key>` (one screenshot) or `ss:<item n>:<key>` (all `SCREENSHOT_COUNT`), matched by `SCREENSHOT_DATA`.
 
@@ -63,7 +70,7 @@ The code is split into four parts:
 
 `/s/<base64>` links decode to `highlight:<id>`. The `story_media_id` query parameter selects one item.
 
-The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), which returns the same shapes with `site: 'facebook'` on share and unsupported results.
+The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), then `parseRedditLink` (`src/reddit.js`), then `parseSnapchatLink` (`src/snapchat.js`). They return the same shapes with `site: 'facebook'`/`'reddit'`/`'snapchat'` on share and unsupported results. A message with none of these links gets no reply; text around a link is ignored.
 
 **Facebook.**
 - **Links.** Every video and reel link (`watch/?v=`, `watch/live/?v=`, `video.php?v=`, `reel/<id>`, `<page>/videos/[slug|vb.n/]<id>`) becomes `f-<numeric id>`. `requestFor` always rebuilds `https://www.facebook.com/watch/?v=<id>`, which yt-dlp handles for reels too.
@@ -81,6 +88,20 @@ The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`sr
 - **Codec.** Facebook often serves only VP9, which Telegram on iOS doesn't play inline. `loadOrDownload` runs `ensureH264` (`frames.js`) on Facebook videos before caching: it probes the codec, re-encodes to H.264 when needed, and keeps the original if that fails. Instagram videos are never touched.
 - **Captions and errors.** `buildCaption` and `describeError` branch on `isFacebook(key)`. The caption is `👤 <page name>` linking to `facebook.com/<uploader_id>`, then `Open on Facebook`. Instagram's captions and messages are unchanged.
 - **Downloader quirk.** Some Facebook videos fail inside yt-dlp with "Cannot parse data". That is a yt-dlp extractor issue; updating yt-dlp is the fix.
+
+**Reddit.**
+- **Access.** Reddit answers anonymous requests for post data with HTTP 403 from most networks (including this machine, November 2026). With `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` (a "script" app), `accessToken` gets an application-only token (`grant_type=client_credentials`, cached for its lifetime) and the post is read from `https://oauth.reddit.com/comments/<id>?raw_json=1`. Without them the public `.json` URL is tried; a 403/429 there throws `code: 'REDDIT_NEEDS_KEY'`, a rejected key `REDDIT_KEY_INVALID`. Reddit wants a descriptive `User-Agent` (`USER_AGENT`).
+- **Links.** `/r/<sub>/comments/<id>`, `/user/<u>/comments/<id>`, `/comments/<id>` on any reddit.com subdomain, and `redd.it/<id>`, become `r-<id>`. `v.redd.it/<code>` and the app's `/r/<sub>/s/<code>` links are share links: `resolveRedditShareLink` follows their redirects (retrying on `oauth.reddit.com` with the token if www.reddit.com doesn't redirect).
+- **Media** (`postItems`). Crossposts use `crosspost_parent_list[0]`. A gallery is `gallery_data.items` (order) + `media_metadata` (`e: 'Image'` → `https://i.redd.it/<media id>.<ext>` with `s.u` as fallback; `AnimatedImage` → `s.mp4`). A video is `secure_media.reddit_video`: its `dash_url` on v.redd.it goes to yt-dlp (generic DASH, `-S res:720`), which merges the separate video and audio. A GIF is the preview's `variants.mp4`; a converted external GIF is `preview.reddit_video_preview`. Images are `url` on i.redd.it or `preview.images[0].source`. Text posts throw `NO_MEDIA`, links elsewhere `EXTERNAL_LINK` (with `domain`).
+- **Downloads.** `downloadRedditPost` (`instagram.js`) downloads in order: images and MP4s with `downloadRedditFile` (only `i.redd.it`, `preview.redd.it`, `external-preview.redd.it`, `v.redd.it`, image or mp4 content types), videos with `runYtdlp` and `request.output` naming the file. URLs from Reddit's data are host-checked before use. `loadOrDownload` runs `ensureH264` on every non-Instagram video.
+- **Caption.** `👤 u/<author> in r/<sub>`, then `Open on Reddit` (`https://www.reddit.com/comments/<id>/`). Errors carry `source: 'reddit'`.
+
+**Snapchat** (`snapchat.js`, no login).
+- yt-dlp's `SnapchatSpotlight` extractor fails ("Unable to extract next.js data", November 2026), so the pages are read directly with `fetch` (redirects only within www.snapchat.com) and files are downloaded from `*.sc-cdn.net` (content type decides `.jpg`/`.mp4`).
+- **Profile** (`/@user`, `/add/user`, `story.snapchat.com/@user`) → `scu-<user>`: `__NEXT_DATA__` `props.pageProps.story.snapList`; no snaps throws `NO_STORY`. **Highlight** (`/@user/highlight/<uuid>`) → `sch-<user>-<uuid>`: `pageProps.highlight.snapList`, owner in `publicUserProfile`. A snap: `snapMediaType` 0 photo / 1 video, `snapUrls.mediaUrl`. Overlays (`overlayUrl`) aren't added.
+- **Spotlight** (`/spotlight/<id>`, `/@user/spotlight/<id>`): the page is App Router (no `__NEXT_DATA__`); the video is the `VideoObject` in `application/ld+json` (`contentUrl`, `creator.alternateName`/`name`). Ids are ~59 chars, too long for callback data, so the key is `scs-` + 16 chars of the id's SHA-256 (base64url), and `ID_FILE` (`os.tmpdir()/insta-reel-bot-snapchat-ids.json`) maps it back. `requestFor` returns null for an unknown hash (e.g. after the temp folder is cleared).
+- **App share links** (`snapchat.com/t/<code>`) redirect (303) to `story.snapchat.com/u/<user>/<snap id>` (one story snap → `scn-`: the story page, keeping only the snap whose `snapId.value` matches; gone → `SNAP_GONE`) or `story.snapchat.com/o/<id>` (a Spotlight). Some Spotlight pages leave out their own video (only an "up next" list of other videos); `spotlightFromProfile` then looks for the id in the creator's `spotlightHighlights` (only the ~16 newest are on the page), else `SPOTLIGHT_HIDDEN`.
+- Usernames are limited to 15 characters so `ss:<n>:sch-<user>-<uuid>` fits in 64 bytes. Short links (`t.snapchat.com/<code>`, `/t/<code>`) go through `resolveSnapchatShareLink`. Errors carry `source: 'snapchat'`.
 
 **Security invariant.** User text never reaches a subprocess. Only validated parts (shortcode `[\w-]+`, username `\w[\w.]*`, numeric IDs) go into keys, and `requestFor` builds the URL from the key. Subprocesses use `execFile` (no shell), and the URL comes after `--`. The callback-query regex and `requestFor` validate keys again when a button is pressed. Keep all of this intact when changing parsing or download code.
 

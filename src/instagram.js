@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { downloadImage, readFacebookPhoto, readFacebookPost } from './facebook.js';
+import { downloadRedditFile, readRedditPost } from './reddit.js';
+import { downloadSnapchat, spotlightIdFor } from './snapchat.js';
 
 const run = promisify(execFile);
 
@@ -37,6 +39,11 @@ const PHOTO_EXT = /^(jpe?g|png|webp|heic)$/i;
  *   f-<video id>             a Facebook video or reel (parsed in facebook.js)
  *   fp-<page>-<post id>      a Facebook post: photos and/or videos (page: numeric id or username)
  *   fph-<photo id>           one Facebook photo
+ *   r-<post id>              a Reddit post: video, image, GIF or gallery (parsed in reddit.js)
+ *   scu-<user>               a Snapchat user's current public story (parsed in snapchat.js)
+ *   sch-<user>-<uuid>        a Snapchat highlight
+ *   scs-<hash>               a Snapchat Spotlight video (the id is looked up by its hash)
+ *   scn-<user>-<hash>        one snap of a Snapchat user's story
  */
 const KEY_TYPES = [
   [/^p-([\w-]+)$/, ([, code]) => ({ url: `https://www.instagram.com/p/${code}/` })],
@@ -76,13 +83,37 @@ const KEY_TYPES = [
     /^fph-(\d{1,25})$/,
     ([, id]) => ({ url: `https://www.facebook.com/photo.php?fbid=${id}`, site: 'facebook', photoId: id }),
   ],
+  [/^r-([a-z0-9]{1,12})$/, ([, id]) => ({ url: `https://www.reddit.com/comments/${id}/`, site: 'reddit', redditId: id })],
+  [
+    /^scu-([a-z0-9][\w.-]{0,14})$/,
+    ([, user]) => ({ url: `https://www.snapchat.com/@${user}`, site: 'snapchat', snapchat: 'story' }),
+  ],
+  [
+    /^sch-([a-z0-9][\w.-]{0,14})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/,
+    ([, user, id]) => ({ url: `https://www.snapchat.com/@${user}/highlight/${id}`, site: 'snapchat', snapchat: 'highlight' }),
+  ],
+  [
+    /^scs-([\w-]{16})$/,
+    ([, hash]) => {
+      const id = spotlightIdFor(hash);
+      return id ? { url: `https://www.snapchat.com/spotlight/${id}`, site: 'snapchat', snapchat: 'spotlight', spotlightId: id } : null;
+    },
+  ],
+  [
+    /^scn-([a-z0-9][\w.-]{0,14})-([\w-]{16})$/,
+    ([, user, hash]) => {
+      const id = spotlightIdFor(hash);
+      return id ? { url: `https://www.snapchat.com/@${user}/${id}`, site: 'snapchat', snapchat: 'story', snapId: id } : null;
+    },
+  ],
 ];
 
-/** Returns { url, args, story, site } for a valid key, or null. `site` is 'instagram' or 'facebook'. */
+/** Returns { url, args, story, site } for a valid key, or null. `site` is 'instagram', 'facebook' or 'reddit'. */
 export function requestFor(key) {
   for (const [pattern, build] of KEY_TYPES) {
     const match = key?.match(pattern);
-    if (match) return { args: [], story: false, site: 'instagram', ...build(match) };
+    const request = match && build(match);
+    if (request) return { args: [], story: false, site: 'instagram', ...request };
   }
   return null;
 }
@@ -204,6 +235,8 @@ export async function downloadMedia(key, dir) {
   if (request.story) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
   if (request.postId) return downloadFacebookPost(key, request, dir);
   if (request.photoId) return downloadFacebookPhoto(key, request, dir);
+  if (request.redditId) return downloadRedditPost(key, request, dir);
+  if (request.snapchat) return downloadSnapchat(key, request, dir);
   return runYtdlp(key, request, dir);
 
   /* COOKIES PAUSED: the routing with the login.
@@ -295,6 +328,47 @@ async function downloadFacebookPhoto(key, request, dir) {
   };
 }
 
+/**
+ * A Reddit post, read through Reddit's API (reddit.js). Images and GIFs (as MP4) are
+ * downloaded directly; a Reddit video is a DASH manifest on v.redd.it, which yt-dlp
+ * downloads and merges (video and audio are separate files there).
+ */
+async function downloadRedditPost(key, request, dir) {
+  const post = await readRedditPost(request.redditId);
+  if (post.items.length === 0) {
+    throw Object.assign(new Error(`Nothing on Reddit to download for ${key}`), {
+      source: 'reddit',
+      code: post.external ? 'EXTERNAL_LINK' : 'NO_MEDIA',
+      domain: post.external,
+    });
+  }
+  const items = [];
+  let partial = false;
+  for (const [i, item] of post.items.entries()) {
+    const base = path.join(dir, `${String(i + 1).padStart(2, '0')}-${item.id}`);
+    try {
+      if (item.kind === 'video') {
+        // at most 720p, so long videos stay under Telegram's 50 MB limit for bots
+        const video = await runYtdlp(key, { url: item.url, args: ['-S', 'res:720'], output: `${base}.%(ext)s` }, dir);
+        items.push(...video.items);
+        partial ||= video.partial;
+        continue;
+      }
+      const file = await downloadRedditFile(item.url, base).catch((err) => {
+        if (!item.fallback) throw err;
+        return downloadRedditFile(item.fallback, base); // the preview copy of the image
+      });
+      const kind = file.endsWith('.mp4') ? 'video' : 'photo';
+      items.push({ file, kind, width: item.width, height: item.height });
+    } catch (err) {
+      console.warn(`[${key}] item ${i + 1} failed:`, err.stderr || err.message);
+      partial = true;
+    }
+  }
+  if (items.length === 0) throw Object.assign(new Error(`Nothing in ${key} could be downloaded`), { source: 'reddit' });
+  return { author: post.author, subreddit: post.subreddit, partial, items };
+}
+
 async function runYtdlp(key, request, dir /* COOKIES PAUSED: , withLogin */) {
   let stdout;
   let partial = false;
@@ -308,7 +382,7 @@ async function runYtdlp(key, request, dir /* COOKIES PAUSED: , withLogin */) {
         // videos: best mp4 (merging separate video and audio); photos: the plugin's "photo" format
         '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b/photo',
         '--merge-output-format', 'mp4',
-        '-o', path.join(dir, '%(id)s.%(ext)s'),
+        '-o', request.output ?? path.join(dir, '%(id)s.%(ext)s'),
         '--print', `after_move:%(.{${ITEM_FIELDS}})j`,
         ...request.args,
         // COOKIES PAUSED: ...(withLogin ? cookieArgs() : []),
