@@ -49,6 +49,25 @@ bot.api.config.use(async (prev, method, payload, signal) => {
   }
 });
 
+// After the computer sleeps or changes network, the open getUpdates request can sit on a
+// dead connection until grammY's 500 s client timeout: the bot looks alive but ignores
+// messages for minutes. getUpdates long-polls for 30 s, so drop it after GET_UPDATES_LIMIT_MS;
+// grammY then retries on a fresh connection. (grammY's signal comes from its own
+// AbortController polyfill, which AbortSignal.any rejects, hence the manual wiring.)
+const GET_UPDATES_LIMIT_MS = 45_000;
+bot.api.config.use((prev, method, payload, signal) => {
+  if (method !== 'getUpdates') return prev(method, payload, signal);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, GET_UPDATES_LIMIT_MS);
+  if (signal?.aborted) abort();
+  signal?.addEventListener('abort', abort); // bot.stop() still cancels it at once
+  return prev(method, payload, controller.signal).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  });
+});
+
 // ---------- download cache ----------
 
 const inFlight = new Map();
@@ -352,11 +371,7 @@ async function resendMedia(chatId, items) {
 
 bot.on('message:text', (ctx) => {
   const link = parseInstagramLink(ctx.message.text) ?? parseFacebookLink(ctx.message.text);
-  if (!link) {
-    return ctx.reply(
-      'Send me an Instagram or Facebook link, like https://www.instagram.com/reel/ABC123xyz/ or a Facebook video or reel link.',
-    );
-  }
+  if (!link) return; // plain text without an Instagram or Facebook link: ignore it
   if (link.unsupported && link.site === 'facebook') {
     return ctx.reply(
       'From Facebook I can download videos, reels, posts and photos. Send a link to one (in the app: Share → Copy link).',
