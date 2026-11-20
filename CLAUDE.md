@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) through Reddit's API and public Snapchat Spotlight videos, stories and highlights. Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) through Reddit's API public Snapchat Spotlight videos, stories and highlights, and public X (Twitter) posts (photos, videos, GIFs). Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -26,12 +26,6 @@ npm run dev        # same, with --watch (restarts on file changes)
   - To test `yt-dlp` and the plugin directly: `yt-dlp --plugin-dirs ./yt-dlp-plugins -v …`. The verbose output should list `Extractor Plugins: photos (InstagramIE), photos (InstagramStoryIE)`.
 - End-to-end testing needs a real bot token. Run `npm run dev` and message the bot.
 
-**On this machine the bot already runs as a launchd agent** (`~/Library/LaunchAgents/local.insta-reel-bot.plist`, label `local.insta-reel-bot`). It runs `node --watch`, so saving `.env` or any file `src/bot.js` imports restarts it. Don't run `npm start` or `npm run dev` while it is loaded: Telegram allows only one poller per token, and the second one fails with `409 Conflict`.
-- Logs: `tail -f ~/Library/Logs/insta-reel-bot.log`
-- Restart by hand: `launchctl kickstart -k gui/$(id -u)/local.insta-reel-bot`
-- Stop until the next login: `launchctl bootout gui/$(id -u)/local.insta-reel-bot`. Start again: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.insta-reel-bot.plist`
-- The plugin needs no restart, because each `yt-dlp` run loads it fresh.
-
 ## Architecture
 
 The code is split into four parts:
@@ -39,6 +33,7 @@ The code is split into four parts:
 - `src/instagram.js`: Instagram link parsing, `KEY_TYPES`/`requestFor` for every site, share-link resolution and running `yt-dlp`.
 - `src/facebook.js`: Facebook link parsing, share-link resolution, and reading post and photo pages (photos are downloaded here, without yt-dlp).
 - `src/snapchat.js`: Snapchat link parsing, reading the public pages and downloading their media.
+- `src/x.js`: X (Twitter) link parsing, `t.co` resolution, reading a post from the syndication API and downloading its files.
 - `src/reddit.js`: Reddit link parsing, share-link resolution, the API token, reading a post's media and downloading images/MP4s.
 - `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots and `ensureH264`).
 - `yt-dlp-plugins/`: the yt-dlp plugin.
@@ -60,6 +55,7 @@ The code is split into four parts:
 | `sch-<user>-<uuid>` | One Snapchat highlight |
 | `scs-<16-char hash>` | A Snapchat Spotlight video (the id is looked up, see below) |
 | `scn-<user>-<16-char hash>` | One snap of a Snapchat user's story (the snap id is looked up the same way) |
+| `x-<post id>` | An X (Twitter) post (`site: 'x'`) |
 
 `requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `s1:<item n>:<key>` (one screenshot) or `ss:<item n>:<key>` (all `SCREENSHOT_COUNT`), matched by `SCREENSHOT_DATA`.
 
@@ -70,7 +66,7 @@ The code is split into four parts:
 
 `/s/<base64>` links decode to `highlight:<id>`. The `story_media_id` query parameter selects one item.
 
-The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), then `parseRedditLink` (`src/reddit.js`), then `parseSnapchatLink` (`src/snapchat.js`). They return the same shapes with `site: 'facebook'`/`'reddit'`/`'snapchat'` on share and unsupported results. A message with none of these links gets no reply; text around a link is ignored.
+The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), then `parseRedditLink` (`src/reddit.js`), then `parseSnapchatLink` (`src/snapchat.js`), then `parseXLink` (`src/x.js`). They return the same shapes with `site: 'facebook'`/`'reddit'`/`'snapchat'`/`'x'` on share and unsupported results. A message with none of these links gets no reply; text around a link is ignored.
 
 **Facebook.**
 - **Links.** Every video and reel link (`watch/?v=`, `watch/live/?v=`, `video.php?v=`, `reel/<id>`, `<page>/videos/[slug|vb.n/]<id>`) becomes `f-<numeric id>`. `requestFor` always rebuilds `https://www.facebook.com/watch/?v=<id>`, which yt-dlp handles for reels too.
@@ -102,6 +98,13 @@ The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`sr
 - **Spotlight** (`/spotlight/<id>`, `/@user/spotlight/<id>`): the page is App Router (no `__NEXT_DATA__`); the video is the `VideoObject` in `application/ld+json` (`contentUrl`, `creator.alternateName`/`name`). Ids are ~59 chars, too long for callback data, so the key is `scs-` + 16 chars of the id's SHA-256 (base64url), and `ID_FILE` (`os.tmpdir()/insta-reel-bot-snapchat-ids.json`) maps it back. `requestFor` returns null for an unknown hash (e.g. after the temp folder is cleared).
 - **App share links** (`snapchat.com/t/<code>`) redirect (303) to `story.snapchat.com/u/<user>/<snap id>` (one story snap → `scn-`: the story page, keeping only the snap whose `snapId.value` matches; gone → `SNAP_GONE`) or `story.snapchat.com/o/<id>` (a Spotlight). Some Spotlight pages leave out their own video (only an "up next" list of other videos); `spotlightFromProfile` then looks for the id in the creator's `spotlightHighlights` (only the ~16 newest are on the page), else `SPOTLIGHT_HIDDEN`.
 - Usernames are limited to 15 characters so `ss:<n>:sch-<user>-<uuid>` fits in 64 bytes. Short links (`t.snapchat.com/<code>`, `/t/<code>`) go through `resolveSnapchatShareLink`. Errors carry `source: 'snapchat'`.
+
+**X (Twitter)** (`x.js`, no login, no API key).
+- **Source.** `https://cdn.syndication.twimg.com/tweet-result?id=<id>&token=<t>`, X's embed API (yt-dlp isn't used). `token` is derived from the id (`tokenFor`, the formula X's embed code uses). Works anonymously from this machine (November 2026).
+- **Links.** `/<user>/status/<id>`, `/i/status/<id>`, `/i/web/status/<id>`, `/statuses/<id>` on x.com, twitter.com (www/mobile/m) and the fxtwitter/vxtwitter/fixupx/fixvx mirrors become `x-<id>`; other x.com pages are unsupported. `t.co/<code>` is a share link: `resolveXShareLink` follows its 301 (it sends a curl User-Agent, because t.co answers browsers with an HTML page instead of a redirect).
+- **Media.** `mediaDetails[]`: `photo` → `media_url_https` with `?name=orig`; `video`/`animated_gif` → `video_info.variants` MP4s (audio included), best bitrate first, and `pickUrl` HEADs them for the first ≤ 49 MB. A post without media uses `quoted_tweet`'s (and its author). Files only from `pbs.twimg.com`/`video.twimg.com`.
+- **Errors.** 404 or an empty body → `X_GONE` (deleted or protected); `__typename: 'TweetTombstone'` → `X_HIDDEN` (sensitive, hidden logged out); 429 → `X_RATE_LIMIT`; no media → `NO_MEDIA`. Errors carry `source: 'x'`.
+- **Caption.** `👤 Name (@user)` linking to `x.com/<user>`, then `Open on X`.
 
 **Security invariant.** User text never reaches a subprocess. Only validated parts (shortcode `[\w-]+`, username `\w[\w.]*`, numeric IDs) go into keys, and `requestFor` builds the URL from the key. Subprocesses use `execFile` (no shell), and the URL comes after `--`. The callback-query regex and `requestFor` validate keys again when a button is pressed. Keep all of this intact when changing parsing or download code.
 

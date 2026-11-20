@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { downloadImage, readFacebookPhoto, readFacebookPost } from './facebook.js';
 import { downloadRedditFile, readRedditPost } from './reddit.js';
 import { downloadSnapchat, spotlightIdFor } from './snapchat.js';
+import { downloadXPost } from './x.js';
 
 const run = promisify(execFile);
 
@@ -44,6 +45,7 @@ const PHOTO_EXT = /^(jpe?g|png|webp|heic)$/i;
  *   sch-<user>-<uuid>        a Snapchat highlight
  *   scs-<hash>               a Snapchat Spotlight video (the id is looked up by its hash)
  *   scn-<user>-<hash>        one snap of a Snapchat user's story
+ *   x-<post id>              an X (Twitter) post: photos, videos, GIFs (parsed in x.js)
  */
 const KEY_TYPES = [
   [/^p-([\w-]+)$/, ([, code]) => ({ url: `https://www.instagram.com/p/${code}/` })],
@@ -106,6 +108,7 @@ const KEY_TYPES = [
       return id ? { url: `https://www.snapchat.com/@${user}/${id}`, site: 'snapchat', snapchat: 'story', snapId: id } : null;
     },
   ],
+  [/^x-(\d{1,25})$/, ([, id]) => ({ url: `https://x.com/i/status/${id}`, site: 'x', xId: id })],
 ];
 
 /** Returns { url, args, story, site } for a valid key, or null. `site` is 'instagram', 'facebook' or 'reddit'. */
@@ -237,6 +240,7 @@ export async function downloadMedia(key, dir) {
   if (request.photoId) return downloadFacebookPhoto(key, request, dir);
   if (request.redditId) return downloadRedditPost(key, request, dir);
   if (request.snapchat) return downloadSnapchat(key, request, dir);
+  if (request.xId) return downloadXPost(key, request, dir);
   return runYtdlp(key, request, dir);
 
   /* COOKIES PAUSED: the routing with the login.

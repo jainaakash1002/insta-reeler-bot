@@ -18,6 +18,7 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 | Snapchat Spotlight (`snapchat.com/spotlight/…`, `/@user/spotlight/…`) | The video |
 | Snapchat profile (`snapchat.com/@user`, `/add/user`) | That user's current public story, all snaps |
 | Snapchat highlight (`snapchat.com/@user/highlight/…`) | The whole highlight |
+| X (Twitter) post (`x.com/<user>/status/…`, `twitter.com/…`, `t.co/…` links) | Its photos (full size), video or GIF (as a video), as albums |
 | Reddit post (`reddit.com/r/…/comments/…`, `redd.it/…`, `v.redd.it/…`, the app's `/s/…` share links) | Its video (with sound), image, GIF (as a video) or whole gallery |
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
@@ -29,6 +30,8 @@ Once everything from a link has been sent, the bot deletes your message with the
 **Facebook:** public videos, reels, posts and photos, no login. Photos are read straight from Facebook's page, since yt-dlp only downloads videos. Logged out, Facebook shows only some photos of a big post, so the bot says when some are missing. The caption shows the page's name (tap it to open the page) and an **Open on Facebook** link.
 
 **Snapchat:** public Spotlight videos, stories and highlights, no login. The bot reads snapchat.com's public pages (yt-dlp's Snapchat support is broken). Text and stickers drawn on a snap aren't included. Private snaps and friends' stories never appear on the web, so they can't be downloaded.
+
+**X (Twitter):** public posts, no login. The bot reads X's public embed API, the one that shows posts embedded on other websites. For a video it picks the best quality that fits Telegram's 50 MB limit. A post with no media of its own gets its quoted post's media. The caption shows `Name (@user)` and an **Open on X** link.
 
 **Reddit** needs a free API key (see [Reddit](#reddit)). The caption shows `u/<author> in r/<subreddit>` and an **Open on Reddit** link.
 
@@ -119,6 +122,7 @@ Private posts only work if the account whose cookies you use can see them.
 - **Profile links, audio pages and other Instagram pages aren't supported.** Send a link to a reel, post, story or highlight.
 - **50 MB per video and 10 MB per photo**, the Bot API's upload limits. Reels are almost always well under them. If an item isn't, the bot says so, sends the rest and still offers screenshots.
 - **Facebook: public content only.** Profiles, groups and private posts aren't supported. A big post may come back with a few photos missing, because Facebook hides them from logged-out visitors. `fb.watch/…` and `facebook.com/share/…` links depend on Facebook redirecting them to the video; if one fails, open it in a browser and send the link of the video it shows.
+- **X: public posts only.** Protected accounts, deleted posts and posts X marks as sensitive (hidden from logged-out visitors) can't be downloaded. Heavy use can get rate-limited by X for a few minutes.
 - **Reddit: only media hosted on Reddit** (v.redd.it, i.redd.it, galleries). Posts linking to YouTube, Imgur pages and other sites aren't supported, except GIFs Reddit has converted itself.
 - **Share links (`/share/…`) depend on Instagram redirecting them.** If one fails, open it in a browser and send the `instagram.com/…` link it lands on.
 - **Photos are the largest size Instagram offers** to whoever downloads them, which is sometimes smaller without a login.
@@ -135,6 +139,7 @@ src/instagram.js  Instagram link parsing, share links, yt-dlp download (all site
 src/facebook.js   Facebook link parsing, post and photo pages
 src/reddit.js     Reddit link parsing, API access, post media
 src/snapchat.js   Snapchat link parsing, Spotlight/story/highlight pages
+src/x.js          X (Twitter) link parsing, embed API, photo/video download
 src/frames.js     ffmpeg screenshot extraction, H.264 conversion
 yt-dlp-plugins/   yt-dlp plugin: Instagram photos + stories fix
 ```

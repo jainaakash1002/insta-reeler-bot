@@ -5,6 +5,7 @@ import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
 import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
+import { parseXLink, resolveXShareLink } from './x.js';
 import { dropRepeats, ensureH264, extractFrames } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
@@ -131,10 +132,18 @@ const siteOf = (key) => requestFor(key)?.site ?? 'instagram';
 const isFacebook = (key) => siteOf(key) === 'facebook';
 const isReddit = (key) => siteOf(key) === 'reddit';
 const isSnapchat = (key) => siteOf(key) === 'snapchat';
-const siteName = (key) => ({ facebook: 'Facebook', reddit: 'Reddit', snapchat: 'Snapchat' })[siteOf(key)] ?? 'Instagram';
+const isX = (key) => siteOf(key) === 'x';
+const siteName = (key) => ({ facebook: 'Facebook', reddit: 'Reddit', snapchat: 'Snapchat', x: 'X' })[siteOf(key)] ?? 'Instagram';
 
 /** A short caption: the account (linking to its profile) and a link to the post or story itself. */
 function buildCaption(media, key) {
+  if (isX(key)) {
+    const user = /^\w{1,30}$/.test(media.username ?? '') ? media.username : null;
+    const label = escapeHtml(media.author ? `${media.author} (@${user ?? '?'})` : `@${user}`);
+    const account = user && `👤 <a href="https://x.com/${user}"><b>${label}</b></a>`;
+    const post = `https://x.com/${user ?? 'i'}/status/${requestFor(key).xId}`;
+    return [account, `🔗 <a href="${post}">Open on X</a>`].filter(Boolean).join('\n');
+  }
   if (isSnapchat(key)) {
     const user = /^[a-z0-9][\w.-]{0,14}$/i.test(media.username ?? '') ? media.username : null;
     const label = escapeHtml(media.author ? `${media.author} (@${user ?? '?'})` : `@${user}`);
@@ -281,6 +290,15 @@ function describeError(err, key) {
   if (err?.code === 'EXTERNAL_LINK') {
     return `That Reddit post links to ${err.domain ?? 'another site'}. I can only download photos, GIFs and videos hosted on Reddit.`;
   }
+  if (err?.code === 'X_GONE') return 'That X post doesn’t exist anymore, or its account is protected (private).';
+  if (err?.code === 'X_HIDDEN') {
+    return 'X hides that post from logged-out visitors (it’s marked as sensitive or age-restricted), so I can’t download it.';
+  }
+  if (err?.code === 'X_RATE_LIMIT') return 'X is limiting requests right now. Try again in a few minutes.';
+  if (err?.code === 'NO_MEDIA' && isX(key)) return 'That X post has no photos, GIFs or videos.';
+  if (err?.code === 'SHARE_LINK' && err.site === 'x') {
+    return "I couldn't open that t.co link. Open it in a browser and send me the x.com link it lands on.";
+  }
   if (err?.code === 'SNAP_GONE') {
     return 'That snap isn’t in their story anymore (stories disappear after 24 hours). Send their profile link for what’s there now.';
   }
@@ -304,12 +322,13 @@ function describeError(err, key) {
   // Only blame Instagram (expired story, login, private post) for errors that came from yt-dlp.
   if (err?.source === 'ffmpeg') return "Couldn't grab screenshots from that video. Try again, or try another video.";
   if (err?.error_code && err?.description) return `Telegram didn't accept it: ${err.description}`; // GrammyError
-  if (!['yt-dlp', 'facebook', 'reddit', 'snapchat'].includes(err?.source)) return 'Something went wrong on my side. Try again in a bit.';
+  if (!['yt-dlp', 'facebook', 'reddit', 'snapchat', 'x'].includes(err?.source)) return 'Something went wrong on my side. Try again in a bit.';
 
   if (/no such option: --plugin-dirs/i.test(detail)) {
     return 'yt-dlp on the machine running the bot is too old. Update it: brew upgrade yt-dlp';
   }
   if (err.killed) return `${siteName(key)} took too long to respond. Try again in a bit.`;
+  if (isX(key)) return "X didn't return this post. It may be deleted or private, or X changed something. Try again in a minute.";
   if (isSnapchat(key)) {
     return (
       "Snapchat didn't return this. It may be private or removed, or Snapchat changed its pages. " +
@@ -365,13 +384,14 @@ bot.use(async (ctx, next) => {
 
 bot.command(['start', 'help'], (ctx) =>
   ctx.reply(
-    '👋 Send me an Instagram, Facebook, Reddit or Snapchat link and I’ll send it back here.\n\n' +
+    '👋 Send me an Instagram, Facebook, Reddit, Snapchat or X link and I’ll send it back here.\n\n' +
       '✅ Works now\n' +
       '• Instagram reels and videos\n' +
       '• Instagram photo posts and carousels (every photo and video in them)\n' +
       '• Facebook videos, reels, posts and photos (public ones)\n' +
       '• Reddit videos, images, GIFs and galleries\n' +
       '• Snapchat Spotlight videos, public stories and highlights\n' +
+      '• X (Twitter) posts: photos, videos and GIFs\n' +
       `• Screenshots: tap “📸 Get ${SCREENSHOT_COUNT} screenshots” under a video\n` +
       '• Send or forward me a photo or video and I’ll send it back without its caption\n\n' +
       // COOKIES PAUSED: when stories are back, move Stories and Highlights up to "Works now",
@@ -434,8 +454,11 @@ async function resendMedia(chatId, items) {
 
 bot.on('message:text', (ctx) => {
   const text = ctx.message.text;
-  const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text);
+  const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text);
   if (!link) return; // plain text without a supported link: ignore it
+  if (link.unsupported && link.site === 'x') {
+    return ctx.reply('From X I can download posts with photos, videos or GIFs. Send a link to the post (Share → Copy link).');
+  }
   if (link.unsupported && link.site === 'snapchat') {
     return ctx.reply(
       'From Snapchat I can download Spotlight videos, public stories and highlights. ' +
@@ -469,7 +492,7 @@ async function sendMedia(ctx, link) {
   let key = link.key;
 
   try {
-    const resolve = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink }[link.site] ?? resolveShareLink;
+    const resolve = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink, x: resolveXShareLink }[link.site] ?? resolveShareLink;
     key ??= await resolve(link.share).catch((err) => {
       console.error(`[${link.share}] share link:`, err);
       return null;
@@ -621,7 +644,7 @@ process.once('SIGTERM', () => bot.stop());
 bot.start({
   onStart: (me) =>
     console.log(
-      `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit or Snapchat link.` +
+      `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat or X link.` +
         (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
         ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
       // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
