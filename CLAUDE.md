@@ -129,7 +129,8 @@ This depends on yt-dlp internals and Instagram's page format. If photos or stori
 
 Videos in stories and highlights (`needsLogin(key)`) get two buttons: **1 screenshot** (`s1:`, one frame from the middle) and **all N** (`ss:`). Reels and posts get only the **N screenshots** button (`ss:`). The handler calls `getMedia` again, runs `extractFrames` on item `n`, then `dropRepeats`. `dropRepeats` compares 32×32 grayscale versions of the frames and drops any frame that looks like the previous kept one; the threshold was measured on real videos (see `frames.js`). After any screenshot request, `planButtonCleanup`/`applyButtonCleanup` clean up the pressed message: **1 screenshot** deletes the whole message (even the video itself); **all N** removes that video's buttons, and deletes the message only if it is a text message with no buttons left.
 
-**Screenshots (`frames.js`).** Two things went wrong here before:
+**Screenshots (`frames.js`).** Three things went wrong here before:
+- **Memory.** All frames used to be grabbed by parallel ffmpegs, which got the bot killed without an error on Render's free 512 MB instance (log shows only `Instance … restarted`). `mapLimited` now runs at most `JOBS` at once: `FFMPEG_JOBS`, else 1 when the cgroup memory limit (`memoryLimit`) is under 1 GB, else 4. Frame grabs use `-threads 1`; in low-memory mode x264 does too. The startup log prints `ffmpegMode`.
 - **Color range.** Recent ffmpeg (9.x) refuses to write limited-range ("tv") frames as JPEG, which is most videos. The fix is `-vf scale=out_range=full -strict unofficial`; don't drop either part.
 - **Missing frames.** Some Instagram videos are 1-fps slideshows made from photo stories. When no frame starts after the requested time (usually the last slice), ffmpeg exits 0 and writes nothing. `grabFrame` checks that the file exists and retries at the start of the slice. Frames that still fail are skipped, and only an empty result throws.
 

@@ -80,6 +80,7 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | Reddit API key. Needed for Reddit links. |
 | `WEBHOOK_URL` | empty (polling) | The bot's public `https://` address on a host like Render. Telegram then sends messages to it. See [Hosting on Render](#hosting-on-render). |
+| `FFMPEG_JOBS` | `4`, or `1` under 1 GB of memory | How many ffmpeg processes make screenshots at once. Small hosts (Render's free 512 MB) run one at a time, detected automatically. |
 | `PORT` | `3000` | Port for webhook mode. Render sets it itself. |
 | `YTDLP_PATH`, `FFMPEG_PATH`, `FFPROBE_PATH` | on `PATH` | Only if the tools are installed somewhere unusual. |
 

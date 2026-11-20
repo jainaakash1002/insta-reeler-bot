@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -7,6 +9,43 @@ const run = promisify(execFile);
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
+
+/*
+ * Memory. Each ffmpeg decoding a 1080p video takes tens of MB, more with many threads. On a
+ * small host (Render's free plan: 512 MB) running all the screenshot ffmpegs at once got the
+ * bot killed for using too much memory, with no error. So the container's memory limit is
+ * read (cgroup v2, then v1, then the machine's RAM); under 1 GB, ffmpeg runs one job at a
+ * time on one thread. FFMPEG_JOBS overrides the number of parallel jobs.
+ */
+function memoryLimit() {
+  for (const file of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
+    try {
+      const bytes = Number(readFileSync(file, 'utf8').trim()); // "max" (no limit) gives NaN
+      if (bytes > 0 && bytes < os.totalmem()) return bytes;
+    } catch {
+      // not Linux, or no cgroup limit
+    }
+  }
+  return os.totalmem();
+}
+export const LOW_MEMORY = memoryLimit() < 1024 ** 3;
+const JOBS = Math.max(1, Number(process.env.FFMPEG_JOBS) || (LOW_MEMORY ? 1 : 4));
+const THREADS = LOW_MEMORY ? ['-threads', '1'] : [];
+export const ffmpegMode = `ffmpeg: ${JOBS} job(s) at a time${LOW_MEMORY ? ', 1 thread (low memory)' : ''}`;
+
+/** Like Promise.all(items.map(fn)), but at most JOBS calls run at once. */
+async function mapLimited(items, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(JOBS, items.length) }, worker));
+  return results;
+}
 
 async function probeDuration(videoPath) {
   const { stdout } = await run(FFPROBE, [
@@ -23,6 +62,7 @@ async function grabFrame(videoPath, file, time) {
   await run(FFMPEG, [
     '-y',
     '-loglevel', 'error',
+    '-threads', '1', // one frame needs no decoding threads, and each one costs memory
     '-ss', time.toFixed(3),
     '-i', videoPath,
     '-frames:v', '1',
@@ -59,8 +99,9 @@ async function grabFrames(videoPath, outDir, count, duration) {
   if (!(total > 0)) throw new Error(`Could not read the duration of ${videoPath}`);
   const slice = total / count;
 
-  const frames = await Promise.all(
-    Array.from({ length: count }, async (_, i) => {
+  const frames = await mapLimited(
+    Array.from({ length: count }, (_, i) => i),
+    async (i) => {
       const file = path.join(outDir, `frame_${String(i + 1).padStart(2, '0')}.jpg`);
       // The middle of the slice, or its start if there's no frame after the middle
       // (low-frame-rate videos, like slideshows Instagram makes from photo stories).
@@ -68,7 +109,7 @@ async function grabFrames(videoPath, outDir, count, duration) {
         if (await grabFrame(videoPath, file, time)) return { file, time };
       }
       return null;
-    }),
+    },
   );
 
   const grabbed = frames.filter(Boolean);
@@ -105,7 +146,7 @@ function difference(a, b) {
 export async function dropRepeats(frames) {
   if (frames.length < 2) return frames;
   try {
-    const signatures = await Promise.all(frames.map((frame) => signature(frame.file)));
+    const signatures = await mapLimited(frames, (frame) => signature(frame.file));
     const kept = [];
     let last;
     frames.forEach((frame, i) => {
@@ -151,6 +192,7 @@ export async function ensureH264(videoPath) {
         '-map', '0:v:0',
         '-map', '0:a:0?', // the audio, if there is any
         '-c:v', 'libx264',
+        ...THREADS,
         '-preset', 'veryfast',
         '-crf', '23',
         '-pix_fmt', 'yuv420p', // the most widely playable H.264

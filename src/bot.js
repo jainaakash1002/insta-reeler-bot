@@ -8,7 +8,7 @@ import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
 import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
 import { parseXLink, resolveXShareLink } from './x.js';
-import { dropRepeats, ensureH264, extractFrames } from './frames.js';
+import { dropRepeats, ensureH264, extractFrames, ffmpegMode } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -644,7 +644,7 @@ const logStarted = (me, mode) =>
   console.log(
     `@${me.username} is running (${mode}). Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat or X link.` +
       (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
-      ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
+      ` Stories and highlights are paused (search the code for COOKIES PAUSED). ${ffmpegMode}.`,
     // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
   );
 
