@@ -1,0 +1,6 @@
+.env
+cookies*.txt
+node_modules
+.git
+**/__pycache__
+.DS_Store
