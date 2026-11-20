@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
@@ -638,15 +640,72 @@ try {
   throw err;
 }
 
-process.once('SIGINT', () => bot.stop());
-process.once('SIGTERM', () => bot.stop());
+const logStarted = (me, mode) =>
+  console.log(
+    `@${me.username} is running (${mode}). Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat or X link.` +
+      (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
+      ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
+    // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
+  );
 
-bot.start({
-  onStart: (me) =>
-    console.log(
-      `@${me.username} is running. Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat or X link.` +
-        (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
-        ' Stories and highlights are paused (search the code for COOKIES PAUSED).',
-      // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),
-    ),
-});
+/*
+ * Webhook mode (WEBHOOK_URL set, e.g. on Render's free plan): Telegram POSTs each update to
+ * <WEBHOOK_URL>/telegram, which also wakes a host that sleeps when idle. Any other request
+ * gets "ok" (health checks). Telegram is answered at once and the update is handled after:
+ * downloads run in the background anyway, and an error answer would make Telegram send the
+ * same update again. The secret header proves a request came from Telegram; it's derived
+ * from the token, so there is nothing extra to configure.
+ * Without WEBHOOK_URL the bot long-polls as before. Polling (npm start) removes the webhook,
+ * so after running it locally, restart the hosted bot to set the webhook again.
+ */
+async function startWebhook(baseUrl) {
+  const hookPath = '/telegram';
+  const secret = createHash('sha256').update(`webhook:${BOT_TOKEN}`).digest('hex');
+  await bot.init();
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== hookPath) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
+      return;
+    }
+    if (req.headers['x-telegram-bot-api-secret-token'] !== secret) {
+      res.writeHead(401).end();
+      return;
+    }
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) req.destroy(); // updates are a few KB
+    });
+    req.on('end', () => {
+      res.writeHead(200).end();
+      let update;
+      try {
+        update = JSON.parse(body);
+      } catch {
+        return;
+      }
+      bot.handleUpdate(update).catch((err) => console.error('Bot error:', err.error ?? err));
+    });
+  });
+  const port = Number(process.env.PORT) || 3000;
+  await new Promise((resolve) => server.listen(port, resolve));
+  await bot.api.setWebhook(`${baseUrl}${hookPath}`, { secret_token: secret });
+  const stop = () => server.close(() => process.exit(0));
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  logStarted(bot.botInfo, `webhook, port ${port}`);
+}
+
+const WEBHOOK_URL = process.env.WEBHOOK_URL?.trim().replace(/\/+$/, '');
+if (WEBHOOK_URL) {
+  if (!/^https:\/\/[^\s/]+$/i.test(WEBHOOK_URL)) {
+    console.error('WEBHOOK_URL must be the https:// address of the service, e.g. https://my-bot.onrender.com');
+    process.exit(1);
+  }
+  await startWebhook(WEBHOOK_URL);
+} else {
+  process.once('SIGINT', () => bot.stop());
+  process.once('SIGTERM', () => bot.stop());
+  bot.start({ onStart: (me) => logStarted(me, 'polling') });
+}

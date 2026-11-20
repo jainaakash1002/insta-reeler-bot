@@ -25,6 +25,7 @@ npm run dev        # same, with --watch (restarts on file changes)
   - `src/instagram.js` and `src/frames.js` have no Telegram dependency and can be imported and called directly, e.g. `downloadMedia('p-<shortcode>', dir)`. `src/bot.js` can't: it starts polling as soon as it is imported (top-level await).
   - To test `yt-dlp` and the plugin directly: `yt-dlp --plugin-dirs ./yt-dlp-plugins -v …`. The verbose output should list `Extractor Plugins: photos (InstagramIE), photos (InstagramStoryIE)`.
 - End-to-end testing needs a real bot token. Run `npm run dev` and message the bot.
+- **Webhook mode** (`WEBHOOK_URL`, for hosts that sleep when idle, like Render's free Web Service): `startWebhook` in `bot.js` serves `POST /telegram` on `PORT` (default 3000), checks Telegram's `X-Telegram-Bot-Api-Secret-Token` (sha256 of `webhook:<token>`, so nothing extra to configure), answers 200 at once and then runs `bot.handleUpdate` (an error reply would make Telegram resend the update). Every other request gets `ok` (health check). It calls `setWebhook` at startup. Without `WEBHOOK_URL` the bot long-polls; grammY's `bot.start()` deletes the webhook, so a local `npm start` breaks the hosted bot until it restarts. `Dockerfile` builds the image for Render/Railway/a VPS (see README).
 
 ## Architecture
 

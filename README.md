@@ -79,7 +79,25 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | Reddit API key. Needed for Reddit links. |
+| `WEBHOOK_URL` | empty (polling) | The bot's public `https://` address on a host like Render. Telegram then sends messages to it. See [Hosting on Render](#hosting-on-render). |
+| `PORT` | `3000` | Port for webhook mode. Render sets it itself. |
 | `YTDLP_PATH`, `FFMPEG_PATH`, `FFPROBE_PATH` | on `PATH` | Only if the tools are installed somewhere unusual. |
+
+## Hosting on Render
+
+The repo has a `Dockerfile` (Node 22, ffmpeg, the latest yt-dlp). Two ways to run it on [Render](https://render.com):
+
+**Free: Web Service + webhook.** A free Web Service sleeps after 15 minutes without web traffic, so the bot runs in webhook mode: Telegram sends each message to the service, which wakes it. The first message after a quiet spell takes 30–60 s; Telegram retries until the service is up, so nothing is lost.
+1. **New + → Web Service**, pick this repo, Language **Docker**, branch `main`, instance type **Free**.
+2. Environment variables: `BOT_TOKEN`, `ALLOWED_USER_IDS` (recommended), and `WEBHOOK_URL` = the service's address shown at the top of its page, e.g. `https://insta-reel-bot.onrender.com` (no path). Set `WEBHOOK_URL` after the first deploy if the address isn't known yet; saving it redeploys.
+3. **Health Check Path**: `/` (anything other than `/telegram` answers `ok`).
+4. The log should say `@<bot> is running (webhook, port 10000)`.
+
+Free instances have 0.1 CPU, so H.264 conversion and screenshots are slow, and the 750 free hours a month are shared by all free services in the workspace (webhook mode only uses them while the bot is awake).
+
+**Always on: Background Worker** (Starter, $7/month). Same settings, but no `WEBHOOK_URL`: the bot polls and answers instantly.
+
+Only one copy of the bot can run per token. Running `npm start` locally switches the bot to polling and removes the webhook; afterwards, restart the Render service (**Manual Deploy → Restart service**) to set it again. To update yt-dlp, use **Manual Deploy → Clear build cache & deploy**. Instagram rate-limits server IPs more than home connections, so Instagram links may fail there while the other sites work.
 
 ## Stories and highlights
 
