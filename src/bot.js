@@ -127,6 +127,78 @@ async function pruneCache() {
 
 // ---------- message helpers ----------
 
+/*
+ * A "working on it" message that looks alive: the moon in front of the text cycles
+ * 🌑🌒🌓🌔🌕🌖🌗🌘 while the bot works, and Telegram's own "sending a video…" indicator shows at
+ * the top of the chat. done() deletes the message; fail(text) turns it into the error.
+ * Groups allow a bot about 20 messages (edits included) a minute, so the animation is slower
+ * there. An edit still waiting for Telegram is never doubled up, and loader edits that fail
+ * (rate limits, the message was deleted) are just skipped.
+ */
+const LOADER_FRAMES = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
+const ACTION_EVERY_MS = 4000; // a chat action shows for 5 s
+
+async function startLoader(ctx, label, { replyTo, action = 'upload_video' } = {}) {
+  const chatId = ctx.chat.id;
+  const tickMs = ctx.chat.type === 'private' ? 1500 : 4000;
+  let text = label;
+  let frame = 0;
+  let busy = false;
+  let stopped = false;
+  let lastAction = 0;
+  const render = () => `${LOADER_FRAMES[frame % LOADER_FRAMES.length]} ${text}`;
+  const showAction = () => {
+    if (Date.now() - lastAction < ACTION_EVERY_MS) return;
+    lastAction = Date.now();
+    ctx.api.sendChatAction(chatId, action).catch(() => {});
+  };
+
+  const message = await ctx.api.sendMessage(
+    chatId,
+    render(),
+    replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {},
+  );
+  showAction();
+  const timer = setInterval(() => {
+    showAction();
+    if (busy || stopped) return;
+    busy = true;
+    frame++;
+    ctx.api
+      .editMessageText(chatId, message.message_id, render())
+      .catch(() => {})
+      .finally(() => {
+        busy = false;
+      });
+  }, tickMs);
+  timer.unref();
+
+  const stop = () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+  return {
+    /** Changes the text; it shows with the next frame. */
+    set(label) {
+      text = label;
+    },
+    async done() {
+      stop();
+      await ctx.api.deleteMessage(chatId, message.message_id).catch(() => {});
+    },
+    /** Replaces the loader with `errorText`, or sends it as a new message if that fails. */
+    async fail(errorText) {
+      stop();
+      await ctx.api.editMessageText(chatId, message.message_id, errorText).catch(async (editErr) => {
+        console.error(`couldn't edit the status message:`, editErr?.description ?? editErr);
+        await ctx.api
+          .sendMessage(chatId, errorText)
+          .catch((sendErr) => console.error('Could not send the error either:', sendErr?.description ?? sendErr));
+      });
+    },
+  };
+}
+
 const escapeHtml = (text) =>
   text.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
@@ -488,10 +560,10 @@ bot.on('message:text', (ctx) => {
 });
 
 async function sendMedia(ctx, link) {
-  const status = await ctx.reply('⏳ Downloading…', {
-    reply_parameters: { message_id: ctx.message.message_id },
-  });
   let key = link.key;
+  const loader = await startLoader(ctx, key ? `Downloading from ${siteName(key)}…` : 'Opening the link…', {
+    replyTo: ctx.message.message_id,
+  });
 
   try {
     const resolve = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink, x: resolveXShareLink }[link.site] ?? resolveShareLink;
@@ -503,22 +575,20 @@ async function sendMedia(ctx, link) {
     if (needsLogin(key)) throw Object.assign(new Error('Stories and highlights are paused'), { code: 'STORIES_PAUSED' });
     // COOKIES PAUSED: if (needsLogin(key) && !hasLogin()) throw Object.assign(new Error('Login needed'), { code: 'NEEDS_LOGIN' });
 
+    loader.set(`Downloading from ${siteName(key)}…`);
     const media = await getMedia(key);
+    const count = media.items.length;
+    loader.set(count > 1 ? `Sending ${count} items…` : `Sending the ${media.items[0]?.kind ?? 'item'}…`);
     const complete = await deliver(ctx, key, media);
-    await ctx.api.deleteMessage(ctx.chat.id, status.message_id).catch(() => {});
+    await loader.done();
     // Everything arrived, so the user's link message has done its job. After an error, or if
     // some items couldn't be sent, it stays so the user can see what they asked for.
     if (complete) await ctx.deleteMessage().catch(() => {});
     console.log(`[${key}] sent ${media.items.length} item(s) to chat ${ctx.chat.id}${complete ? '' : ' (incomplete)'}`);
   } catch (err) {
     console.error(`[${key ?? link.share}]`, err?.stderr || err);
-    const text = `❌ ${describeError(err, key)}`;
-    // If the "Downloading…" message can't be edited, send the error as a new message, so the
-    // user never sees "Downloading…" with no answer.
-    await ctx.api.editMessageText(ctx.chat.id, status.message_id, text).catch(async (editErr) => {
-      console.error(`[${key ?? link.share}] couldn't edit the status message:`, editErr?.description ?? editErr);
-      await ctx.reply(text).catch((replyErr) => console.error('Could not send the error either:', replyErr?.description ?? replyErr));
-    });
+    // The loader becomes the error (or the error is sent anew), so it never spins with no answer.
+    await loader.fail(`❌ ${describeError(err, key)}`);
   }
 }
 
@@ -593,9 +663,13 @@ async function sendScreenshots(ctx, key, n, count) {
   const replyTo = ctx.callbackQuery.message?.message_id;
   const replyOptions = replyTo ? { reply_parameters: { message_id: replyTo } } : {};
   let framesDir;
+  let loader;
 
   try {
-    await ctx.replyWithChatAction('upload_photo');
+    loader = await startLoader(ctx, count === 1 ? 'Taking a screenshot…' : `Taking ${count} screenshots…`, {
+      replyTo,
+      action: 'upload_photo',
+    });
     const media = await getMedia(key); // re-downloads if the cache expired
     const video = media.items[n - 1];
     if (video?.kind !== 'video') throw Object.assign(new Error(`Item ${n} of ${key} is not a video`), { code: 'NO_MEDIA' });
@@ -611,12 +685,16 @@ async function sendScreenshots(ctx, key, n, count) {
     const cleanup = planButtonCleanup(ctx.callbackQuery.message, n, key, count === 1);
     // Don't reply to a message that's about to be deleted (Telegram would show "Deleted message").
     const sendOptions = cleanup?.deleteMessage ? {} : replyOptions;
+    loader.set(frames.length > 1 ? `Sending ${frames.length} screenshots…` : 'Sending the screenshot…');
     await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), { caption, parse_mode: 'HTML' }, sendOptions);
+    await loader.done(); // before the cleanup, which may delete the message the loader replies to
     if (cleanup) await applyButtonCleanup(ctx, cleanup);
     console.log(`[${key}] sent ${frames.length} screenshot(s) of item ${n}`);
   } catch (err) {
     console.error(`[${key}]`, err?.stderr || err);
-    await ctx.reply(`❌ ${describeError(err, key)}`, replyOptions).catch(() => {});
+    const text = `❌ ${describeError(err, key)}`;
+    if (loader) await loader.fail(text);
+    else await ctx.reply(text, replyOptions).catch(() => {});
   } finally {
     if (framesDir) await fs.rm(framesDir, { recursive: true, force: true });
   }

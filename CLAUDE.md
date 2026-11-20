@@ -123,6 +123,8 @@ The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`sr
 
 This depends on yt-dlp internals and Instagram's page format. If photos or stories stop working after an update, check that `_extract_product_media` still exists in `yt_dlp/extractor/instagram.py`, and save the story page to look at it: `yt-dlp --write-pages --cookies … <story url>` writes it to a `.dump` file in the current directory. To debug requests, use `--print-traffic`, but filter out cookie and token headers before showing the output to anyone. `--plugin-dirs` points at the folder *containing* plugin packages (`yt-dlp-plugins/`), not at `yt_dlp_plugins/` itself.
 
+**Loader.** `startLoader` (bot.js) sends the status message (`🌑 Downloading from <site>…`, then `Sending N items…`; `Taking N screenshots…` for the buttons), edits it every 1.5 s (4 s in groups, which allow ~20 messages a minute) to cycle the moon phases, and repeats a chat action (`upload_video`/`upload_photo`). `done()` deletes it; `fail(text)` turns it into the ❌ error. Edits are fire-and-forget and never overlap.
+
 **Request flow.** A text message is parsed, then `sendMedia` resolves share links and checks for a login on story keys. It then calls `getMedia(key)` and `deliver`:
 - **One item:** sent as a single photo or video, with the caption and, for a video, the screenshot button.
 - **Several items:** sent as albums of up to 10, with the caption on the first item. A chunk with a single item is sent on its own, because Telegram albums need at least 2 items. A follow-up message lists skipped oversize items (over 50 MB for a video, 10 MB for a photo) and carries the screenshot buttons, one row per video.
