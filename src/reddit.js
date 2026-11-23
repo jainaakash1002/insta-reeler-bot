@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import https from 'node:https';
 
@@ -9,7 +10,10 @@ import https from 'node:https';
  * Reddit blocks anonymous requests for post data from many networks (HTTP 403), so the post
  * is read through Reddit's official API when REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are
  * set (a free "script" app from reddit.com/prefs/apps, application-only OAuth: no Reddit
- * account login). Without them the public .json endpoint is tried.
+ * account login). Reddit stopped handing out API keys in November 2026, so the bot can
+ * instead use a logged-in Reddit account's cookies (REDDIT_COOKIES_FILE, a Netscape
+ * cookies.txt exported from a browser): the post's .json is then read as that user. Without
+ * either, the public .json endpoint is tried (usually 403).
  *
  * What a post holds:
  *   gallery   gallery_data.items (order) + media_metadata (each image, or an animated one as MP4)
@@ -31,6 +35,38 @@ const USER_AGENT = 'node:insta-reel-bot:v1.0 (personal Telegram bot)'; // Reddit
 const REQUEST_TIMEOUT_MS = 15_000;
 
 const redditError = (message, extra) => Object.assign(new Error(message), { source: 'reddit', ...extra });
+
+// ---------- login cookies ----------
+
+let cookieCache = null; // { file, mtimeMs, header }
+
+/**
+ * The Cookie header for reddit.com from REDDIT_COOKIES_FILE, or null. The file is read again
+ * when it changes, so exporting fresh cookies needs no restart. Values are never logged.
+ */
+function cookieHeader() {
+  const file = process.env.REDDIT_COOKIES_FILE;
+  if (!file) return null;
+  try {
+    const { mtimeMs } = statSync(file);
+    if (cookieCache?.file !== file || cookieCache.mtimeMs !== mtimeMs) {
+      const header = readFileSync(file, 'utf8')
+        .split('\n')
+        .map((line) => line.trim().replace(/^#HttpOnly_/, ''))
+        .filter((line) => line && !line.startsWith('#'))
+        .map((line) => line.split('\t'))
+        .filter((parts) => parts.length >= 7 && /(^|\.)reddit\.com$/i.test(parts[0]) && /^[\w.-]+$/.test(parts[5]))
+        .map((parts) => `${parts[5]}=${parts[6]}`)
+        .join('; ');
+      cookieCache = { file, mtimeMs, header: header || null };
+    }
+    return cookieCache.header;
+  } catch (err) {
+    console.warn(`Can't read REDDIT_COOKIES_FILE (${err.code ?? err.message}); Reddit links go without the login.`);
+    cookieCache = null;
+    return null;
+  }
+}
 
 // ---------- API access ----------
 
@@ -61,20 +97,24 @@ async function accessToken() {
   return token.value;
 }
 
-/** GET a Reddit JSON endpoint: through the API with the key, else the public .json URL. */
+/**
+ * GET a Reddit JSON endpoint: through the API with the key, else the .json URL as the
+ * logged-in user (cookies), else the public .json URL.
+ */
 async function getJson(apiPath) {
   const keyed = hasKey();
+  const cookies = keyed ? null : cookieHeader();
   const url = keyed ? `https://oauth.reddit.com${apiPath}` : `https://www.reddit.com${apiPath}.json`;
   const headers = { 'User-Agent': USER_AGENT };
   if (keyed) headers.Authorization = `Bearer ${await accessToken()}`;
+  if (cookies) headers.Cookie = cookies;
   const res = await fetch(`${url}?raw_json=1`, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (res.status === 401 && keyed) token = null; // expired early: the next request gets a new one
   if (!res.ok) {
-    const blocked = !keyed && (res.status === 403 || res.status === 429);
-    throw redditError(`HTTP ${res.status} from Reddit for ${apiPath}`, {
-      code: blocked ? 'REDDIT_NEEDS_KEY' : res.status === 404 ? 'NO_MEDIA' : undefined,
-      status: res.status,
-    });
+    const blocked = !keyed && (res.status === 401 || res.status === 403 || res.status === 429);
+    // With cookies, a block usually means the login expired (or the account was logged out or banned).
+    const code = blocked ? (cookies ? 'REDDIT_LOGIN_EXPIRED' : 'REDDIT_NEEDS_KEY') : res.status === 404 ? 'NO_MEDIA' : undefined;
+    throw redditError(`HTTP ${res.status} from Reddit for ${apiPath}`, { code, status: res.status });
   }
   return res.json();
 }
@@ -229,6 +269,8 @@ export function parseRedditLink(text) {
 
   const id = postIdIn(parts);
   if (id) return postKey(id);
+  // reddit.com/video/<code>: where v.redd.it links redirect first (November 2026); it redirects to the post
+  if (parts[0] === 'video' && parts.length === 2 && CODE.test(parts[1])) return share(`https://www.reddit.com/video/${parts[1]}`);
   // /r/<sub>/s/<code> (the app's share links) redirect to the post
   if (parts.length === 4 && ['r', 'u', 'user'].includes(parts[0]) && parts[2] === 's' && CODE.test(parts[1]) && CODE.test(parts[3])) {
     return share(`https://www.reddit.com/${parts[0]}/${parts[1]}/s/${parts[3]}`);
@@ -236,10 +278,12 @@ export function parseRedditLink(text) {
   return UNSUPPORTED;
 }
 
-/** The Location of one GET request, or null. */
+/** The Location of one GET request, or null. Sends the login cookies to www.reddit.com if there are any. */
 function redirectOf(url, headers = {}) {
+  const cookies = new URL(url).hostname === 'www.reddit.com' ? cookieHeader() : null;
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': USER_AGENT, ...headers }, timeout: REQUEST_TIMEOUT_MS }, (res) => {
+    const allHeaders = { 'User-Agent': USER_AGENT, ...(cookies ? { Cookie: cookies } : {}), ...headers };
+    const req = https.get(url, { headers: allHeaders, timeout: REQUEST_TIMEOUT_MS }, (res) => {
       res.resume();
       resolve(res.statusCode >= 300 && res.statusCode < 400 ? (res.headers.location ?? null) : null);
     });

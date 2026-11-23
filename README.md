@@ -33,7 +33,7 @@ Once everything from a link has been sent, the bot deletes your message with the
 
 **X (Twitter):** public posts, no login. The bot reads X's public embed API, the one that shows posts embedded on other websites. For a video it picks the best quality that fits Telegram's 50 MB limit. A post with no media of its own gets its quoted post's media. The caption shows `Name (@user)` and an **Open on X** link.
 
-**Reddit** needs a free API key (see [Reddit](#reddit)). The caption shows `u/<author> in r/<subreddit>` and an **Open on Reddit** link.
+**Reddit** needs a logged-in Reddit account's cookies (see [Reddit](#reddit)). The caption shows `u/<author> in r/<subreddit>` and an **Open on Reddit** link.
 
 **Stories and highlights need an Instagram login** (see [Stories and highlights](#stories-and-highlights)). Reels and posts work without one.
 
@@ -78,7 +78,9 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `SCREENSHOT_COUNT` | `6` | Frames sent per screenshot request (1–10, the max for a Telegram album). |
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
-| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | Reddit API key. Needed for Reddit links. |
+| `REDDIT_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs allowed to download Reddit links, since they go through your Reddit account. Others get *"Reddit downloads are only available to the bot's owner."* |
+| `REDDIT_COOKIES_FILE` | — | Path to a `cookies.txt` from a browser logged into Reddit. Needed for Reddit links (see [Reddit](#reddit)). |
+| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | An old Reddit API key, if you have one (Reddit no longer issues them). |
 | `WEBHOOK_URL` | empty (polling) | The bot's public `https://` address on a host like Render. Telegram then sends messages to it. See [Hosting on Render](#hosting-on-render). |
 | `FFMPEG_JOBS` | `4`, or `1` under 1 GB of memory | How many ffmpeg processes make screenshots at once. Small hosts (Render's free 512 MB) run one at a time, detected automatically. |
 | `PORT` | `3000` | Port for webhook mode. Render sets it itself. |
@@ -119,13 +121,15 @@ Stories of private accounts only work if that account follows them. Stories disa
 
 ## Reddit
 
-Reddit blocks anonymous requests for post data from most networks (HTTP 403), so the bot reads posts through Reddit's official API. The key is free and takes two minutes:
+Reddit blocks anonymous requests for post data from most networks (HTTP 403), and it stopped handing out API keys in November 2026. So the bot reads Reddit **as a logged-in account**, using that account's cookies:
 
-1. Go to [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) (logged in to any Reddit account) and click **create another app**.
-2. Pick **script**, give it any name, and enter `http://localhost` as the redirect uri.
-3. Put the ID (the string under the app's name) and the secret in `.env` as `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`, and restart the bot.
+1. Log in to Reddit in a browser with a **spare account** (Reddit can ban accounts used for automated downloads).
+2. With the **Get cookies.txt LOCALLY** extension, open reddit.com and choose **Export** (Netscape format, this site only).
+3. Save the file as `cookies-reddit.txt` in this folder (git-ignored, like every `cookies*.txt`) and set `REDDIT_COOKIES_FILE=/full/path/to/cookies-reddit.txt` in `.env`. On Render, upload it under **Environment → Secret Files** as `cookies-reddit.txt` and set `REDDIT_COOKIES_FILE=/etc/secrets/cookies-reddit.txt`.
 
-The bot uses the key on its own (application-only access): it never logs in as your Reddit account. Without the key, Reddit links get a reply saying the key is missing. Links to other sites (YouTube, …) and text posts have nothing to download.
+The bot only reads posts; it never posts, votes or comments. To keep other people's links off your account, set `REDDIT_USER_IDS` to your Telegram user ID. The login lasts until the cookies expire or the account logs out of all sessions; Reddit links then get *"The bot's Reddit login has expired"*, and you export a new file (the bot rereads it without a restart). Links to other sites (YouTube, …) and text posts have nothing to download.
+
+If you have an old API key (a "script" app), `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` still work and take precedence.
 
 ## When Instagram refuses downloads
 

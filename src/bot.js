@@ -17,13 +17,20 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-const ALLOWED_USERS = new Set(
-  (process.env.ALLOWED_USER_IDS ?? '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter(Boolean)
-    .map(Number),
-);
+const idSet = (value) =>
+  new Set(
+    (value ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .map(Number),
+  );
+const ALLOWED_USERS = idSet(process.env.ALLOWED_USER_IDS);
+// Reddit downloads go through the owner's logged-in Reddit account, so they can be limited
+// to these Telegram users (empty: everyone who may use the bot).
+const REDDIT_USERS = idSet(process.env.REDDIT_USER_IDS);
+const mayUseReddit = (userId) => REDDIT_USERS.size === 0 || REDDIT_USERS.has(userId);
+const REDDIT_OWNER_ONLY = 'Reddit downloads are only available to the bot’s owner.';
 const SCREENSHOT_COUNT = Math.min(10, Math.max(1, Number(process.env.SCREENSHOT_COUNT) || 6));
 const CACHE_DIR = path.join(os.tmpdir(), 'insta-reel-bot');
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -354,10 +361,13 @@ function describeError(err, key) {
   if (err?.code === 'SHARE_LINK' && err.site === 'reddit') {
     return "I couldn't open that Reddit share link. Open it in a browser and send me the reddit.com/r/…/comments/… link it lands on.";
   }
+  if (err?.code === 'REDDIT_LOGIN_EXPIRED') {
+    return 'The bot’s Reddit login has expired, so Reddit refused this. The bot owner needs to export fresh Reddit cookies.';
+  }
   if (err?.code === 'REDDIT_NEEDS_KEY') {
     return (
-      'Reddit blocks downloads from this machine without an API key. The bot owner can add a free one: ' +
-      'see “Reddit” in the README.'
+      'Reddit blocks downloads from this machine unless the bot is logged in. ' +
+      'The bot owner can set REDDIT_COOKIES_FILE: see “Reddit” in the README.'
     );
   }
   if (err?.code === 'REDDIT_KEY_INVALID') return 'Reddit rejected the bot’s API key. The bot owner should check REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.';
@@ -530,6 +540,9 @@ bot.on('message:text', (ctx) => {
   const text = ctx.message.text;
   const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text);
   if (!link) return; // plain text without a supported link: ignore it
+  if ((link.site === 'reddit' || (link.key && isReddit(link.key))) && !mayUseReddit(ctx.from?.id)) {
+    return ctx.reply(REDDIT_OWNER_ONLY, { reply_parameters: { message_id: ctx.message.message_id } });
+  }
   if (link.unsupported && link.site === 'x') {
     return ctx.reply('From X I can download posts with photos, videos or GIFs. Send a link to the post (Share → Copy link).');
   }
@@ -647,6 +660,7 @@ bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
   const n = Number(ctx.match[2]);
   const key = ctx.match[3];
   if (!requestFor(key)) return ctx.answerCallbackQuery().catch(() => {});
+  if (isReddit(key) && !mayUseReddit(ctx.from?.id)) return ctx.answerCallbackQuery({ text: REDDIT_OWNER_ONLY }).catch(() => {});
   // A tap that waited while the bot was restarting can't be answered any more (Telegram allows
   // ~15 s); that's only the little toast, so still send the screenshots.
   await ctx.answerCallbackQuery({ text: count === 1 ? '📸 Grabbing a screenshot…' : '📸 Grabbing screenshots…' }).catch(() => {});
