@@ -274,9 +274,11 @@ const videoOptions = (item) => ({
 
 /*
  * Screenshot buttons carry `s1:<n>:<key>` (one frame from the middle of video n) or
- * `ss:<n>:<key>` (SCREENSHOT_COUNT frames spread across it).
+ * `ss:<n>:<key>` (SCREENSHOT_COUNT frames spread across it). Every keyboard also gets a
+ * "✖️ Cancel" button (`sx`) that removes the buttons without taking screenshots.
  */
 const SCREENSHOT_DATA = /^s([s1]):(\d+):([\w.-]+)$/;
+const DISMISS_DATA = 'sx';
 
 /** Two screenshot buttons (1 / all) per video, numbered from 1 as `n`; undefined if none fit. */
 function screenshotKeyboard(key, videos) {
@@ -294,6 +296,9 @@ function screenshotKeyboard(key, videos) {
     if (offerOne) keyboard.text(`${label} 1 screenshot`, one).text(`${label} all ${SCREENSHOT_COUNT}`, all);
     else keyboard.text(rows.length === 1 ? `📸 Get ${SCREENSHOT_COUNT} screenshots` : `${label} ${SCREENSHOT_COUNT} screenshots`, all);
   });
+  // One video: Cancel sits next to its button(s). Several: Cancel gets its own last row.
+  if (rows.length > 1) keyboard.row();
+  keyboard.text('✖️ Cancel', DISMISS_DATA);
   return keyboard;
 }
 
@@ -310,7 +315,9 @@ function planButtonCleanup(message, n, key, deleteWhole) {
     const match = button.callback_data?.match(SCREENSHOT_DATA);
     return match && Number(match[2]) === n && match[3] === key;
   };
-  const kept = rows.map((row) => row.filter((button) => !isThisVideo(button))).filter((row) => row.length);
+  let kept = rows.map((row) => row.filter((button) => !isThisVideo(button))).filter((row) => row.length);
+  // Only "Cancel" left: no screenshots to offer any more, so it goes too.
+  if (kept.every((row) => row.every((button) => button.callback_data === DISMISS_DATA))) kept = [];
   // A text message that was only there for buttons goes once it has none; a video stays.
   return { kept, deleteMessage: kept.length === 0 && message.text !== undefined };
 }
@@ -695,6 +702,15 @@ bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
   // ~15 s); that's only the little toast, so still send the screenshots.
   await ctx.answerCallbackQuery({ text: count === 1 ? '📸 Grabbing a screenshot…' : '📸 Grabbing screenshots…' }).catch(() => {});
   sendScreenshots(ctx, key, n, count).catch((err) => console.error(`[${key}] sendScreenshots failed:`, err));
+});
+
+// "✖️ Cancel": the user doesn't want screenshots. A text message that only carried the buttons
+// is deleted; a photo or video just loses its buttons.
+bot.callbackQuery(DISMISS_DATA, async (ctx) => {
+  if (!mayScreenshot(ctx.from?.id)) return ctx.answerCallbackQuery({ text: SCREENSHOTS_OWNER_ONLY }).catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => {});
+  if (ctx.callbackQuery.message?.text !== undefined) return ctx.deleteMessage().catch(() => {});
+  await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }).catch(() => {});
 });
 
 // Buttons from older versions of the bot
