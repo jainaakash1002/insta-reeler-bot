@@ -522,6 +522,12 @@ function helpText(userId) {
 
 bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { parse_mode: 'HTML' }));
 
+// /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (REDDIT_USER_IDS).
+bot.command('chatid', (ctx) => {
+  if (!mayUseReddit(ctx.from?.id)) return;
+  return ctx.reply(`This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})`, { parse_mode: 'HTML' });
+});
+
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
 // from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
 // and returned as albums of up to 10, then the originals are deleted. Telegram reuses the
