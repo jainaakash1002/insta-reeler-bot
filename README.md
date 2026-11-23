@@ -78,8 +78,9 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `SCREENSHOT_COUNT` | `6` | Frames sent per screenshot request (1–10, the max for a Telegram album). |
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
-| `REDDIT_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs allowed to download Reddit links, since they go through your Reddit account. Others get *"Reddit downloads are only available to the bot's owner."* |
-| `SCREENSHOT_USER_IDS` | same as `REDDIT_USER_IDS` | Comma-separated Telegram user IDs who get the screenshot buttons. Others get none, and their taps on someone else's are refused. `all`: everyone, even when Reddit is limited. |
+| `OWNER_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs of the bot's owner(s). Only they may download Reddit links (they go through your Reddit account; others get *"Reddit downloads are only available to the bot's owner."*) and use `/chatid`, and their downloads aren't copied to `ARCHIVE_CHAT_ID`. Old name: `REDDIT_USER_IDS`, still read when this isn't set. |
+| `ARCHIVE_CHAT_ID` | empty (off) | A chat id (e.g. your private group: add the bot, send `/chatid@<bot username>` there) that gets a copy of everything other users download, after a line naming the user. Users in `OWNER_USER_IDS` aren't copied. |
+| `SCREENSHOT_USER_IDS` | same as `OWNER_USER_IDS` | Comma-separated Telegram user IDs who get the screenshot buttons. Others get none, and their taps on someone else's are refused. `all`: everyone, even when Reddit is limited. |
 | `REDDIT_COOKIES_FILE` | — | Path to a `cookies.txt` from a browser logged into Reddit. Needed for Reddit links (see [Reddit](#reddit)). |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | An old Reddit API key, if you have one (Reddit no longer issues them). |
 | `WEBHOOK_URL` | empty (polling) | The bot's public `https://` address on a host like Render. Telegram then sends messages to it. See [Hosting on Render](#hosting-on-render). |
@@ -128,7 +129,7 @@ Reddit blocks anonymous requests for post data from most networks (HTTP 403), an
 2. With the **Get cookies.txt LOCALLY** extension, open reddit.com and choose **Export** (Netscape format, this site only).
 3. Save the file as `cookies-reddit.txt` in this folder (git-ignored, like every `cookies*.txt`) and set `REDDIT_COOKIES_FILE=/full/path/to/cookies-reddit.txt` in `.env`. On Render, upload it under **Environment → Secret Files** as `cookies-reddit.txt` and set `REDDIT_COOKIES_FILE=/etc/secrets/cookies-reddit.txt`.
 
-The bot only reads posts; it never posts, votes or comments. To keep other people's links off your account, set `REDDIT_USER_IDS` to your Telegram user ID. The login lasts until the cookies expire or the account logs out of all sessions; Reddit links then get *"The bot's Reddit login has expired"*, and you export a new file (the bot rereads it without a restart). Links to other sites (YouTube, …) and text posts have nothing to download.
+The bot only reads posts; it never posts, votes or comments. To keep other people's links off your account, set `OWNER_USER_IDS` to your Telegram user ID. The login lasts until the cookies expire or the account logs out of all sessions; Reddit links then get *"The bot's Reddit login has expired"*, and you export a new file (the bot rereads it without a restart). Links to other sites (YouTube, …) and text posts have nothing to download.
 
 If you have an old API key (a "script" app), `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` still work and take precedence.
 

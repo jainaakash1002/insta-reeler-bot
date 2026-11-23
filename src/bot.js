@@ -26,15 +26,19 @@ const idSet = (value) =>
       .map(Number),
   );
 const ALLOWED_USERS = idSet(process.env.ALLOWED_USER_IDS);
-// Reddit downloads go through the owner's logged-in Reddit account, so they can be limited
-// to these Telegram users (empty: everyone who may use the bot).
-const REDDIT_USERS = idSet(process.env.REDDIT_USER_IDS);
-const mayUseReddit = (userId) => REDDIT_USERS.size === 0 || REDDIT_USERS.has(userId);
+// The owner(s): OWNER_USER_IDS (REDDIT_USER_IDS is its old name, still read). Only they may
+// download Reddit links (they go through the owner's Reddit login) and use /chatid, and their
+// downloads aren't copied to ARCHIVE_CHAT_ID. Empty: everyone who may use the bot counts as owner.
+const OWNER_USERS = idSet(process.env.OWNER_USER_IDS ?? process.env.REDDIT_USER_IDS);
+const isOwner = (userId) => OWNER_USERS.size === 0 || OWNER_USERS.has(userId);
+// Optional: a chat (e.g. the owner's private group) that gets a copy of what other users download.
+const ARCHIVE_CHAT_ID = process.env.ARCHIVE_CHAT_ID?.trim() || '';
+const mayUseReddit = isOwner;
 const REDDIT_OWNER_ONLY = 'Reddit downloads are only available to the bot’s owner.';
-// Screenshot buttons can be limited the same way: SCREENSHOT_USER_IDS, or REDDIT_USER_IDS when
+// Screenshot buttons can be limited the same way: SCREENSHOT_USER_IDS, or OWNER_USER_IDS when
 // it isn't set ("all" or both empty: everyone). Others get no buttons, and a tap on someone else's is refused.
 const screenshotSetting = process.env.SCREENSHOT_USER_IDS?.trim().toLowerCase();
-const SCREENSHOT_USERS = screenshotSetting === 'all' ? new Set() : screenshotSetting ? idSet(screenshotSetting) : REDDIT_USERS;
+const SCREENSHOT_USERS = screenshotSetting === 'all' ? new Set() : screenshotSetting ? idSet(screenshotSetting) : OWNER_USERS;
 const mayScreenshot = (userId) => SCREENSHOT_USERS.size === 0 || SCREENSHOT_USERS.has(userId);
 const SCREENSHOTS_OWNER_ONLY = 'Screenshots are only for the bot’s owner.';
 const SCREENSHOT_COUNT = Math.min(10, Math.max(1, Number(process.env.SCREENSHOT_COUNT) || 6));
@@ -340,14 +344,16 @@ async function sendOne(ctx, item, extra = {}) {
  * item of every album; `messageOptions` (e.g. reply_parameters) on every message.
  */
 async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) {
+  const ids = [];
   for (let i = 0; i < items.length; i += ALBUM_LIMIT) {
     const chunk = items.slice(i, i + ALBUM_LIMIT);
     const first = captionOptions; // every album gets the caption, not just the first
     if (chunk.length === 1) {
-      await sendOne(ctx, chunk[0], { ...first, ...messageOptions }); // an album needs at least 2 items
+      const message = await sendOne(ctx, chunk[0], { ...first, ...messageOptions }); // an album needs at least 2 items
+      ids.push(message.message_id);
       continue;
     }
-    await ctx.replyWithMediaGroup(
+    const messages = await ctx.replyWithMediaGroup(
       chunk.map((item, j) => {
         const options = j === 0 ? first : {};
         return item.kind === 'photo'
@@ -356,7 +362,9 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) 
       }),
       messageOptions,
     );
+    ids.push(...messages.map((m) => m.message_id));
   }
+  return ids;
 }
 
 function describeError(err, key) {
@@ -522,9 +530,9 @@ function helpText(userId) {
 
 bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { parse_mode: 'HTML' }));
 
-// /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (REDDIT_USER_IDS).
+// /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (OWNER_USER_IDS).
 bot.command('chatid', (ctx) => {
-  if (!mayUseReddit(ctx.from?.id)) return;
+  if (!isOwner(ctx.from?.id)) return;
   return ctx.reply(`This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})`, { parse_mode: 'HTML' });
 });
 
@@ -633,8 +641,9 @@ async function sendMedia(ctx, link) {
     const media = await getMedia(key);
     const count = media.items.length;
     loader.set(count > 1 ? `Sending ${count} items…` : `Sending the ${media.items[0]?.kind ?? 'item'}…`);
-    const complete = await deliver(ctx, key, media);
+    const { complete, sent } = await deliver(ctx, key, media);
     await loader.done();
+    await archiveCopy(ctx, key, sent);
     // Everything arrived, so the user's link message has done its job. After an error, or if
     // some items couldn't be sent, it stays so the user can see what they asked for.
     if (complete) await ctx.deleteMessage().catch(() => {});
@@ -648,7 +657,7 @@ async function sendMedia(ctx, link) {
 
 /**
  * Sends the downloaded items, then notes about skipped ones and screenshot buttons.
- * Returns true if every item was sent.
+ * Returns { complete: every item was sent, sent: ids of the messages with media }.
  */
 async function deliver(ctx, key, media) {
   const items = media.items.map((item, i) => ({ ...item, n: i + 1 }));
@@ -664,11 +673,11 @@ async function deliver(ctx, key, media) {
 
   // One reel or photo: caption and button on the same message, like Instagram shows it.
   if (single && sendable.length === 1 && !media.partial && !media.hidden) {
-    await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
-    return complete;
+    const message = await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
+    return { complete, sent: [message.message_id] };
   }
 
-  await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' });
+  const sent = await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' });
 
   const notes = tooBig.map(
     (item) =>
@@ -690,11 +699,33 @@ async function deliver(ctx, key, media) {
     else if (videos.length === 1) notes.push(`Screenshots from the video (item ${videos[0].n}):`);
     else notes.push('Screenshots from a video (by item number):');
   }
-  if (notes.length === 0) return complete;
+  if (notes.length === 0) return { complete, sent };
   // If nothing could be sent, the caption still belongs in the chat.
   const text = [sendable.length ? '' : caption, ...notes].filter(Boolean).join('\n\n');
   await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...buttons });
-  return complete;
+  return { complete, sent };
+}
+
+/**
+ * Copies what another user downloaded into the owner's archive chat (ARCHIVE_CHAT_ID), after a
+ * line saying who asked for it. Owners (OWNER_USER_IDS) aren't copied. copyMessages
+ * reuses Telegram's files, so nothing is uploaded again. Failures are only logged.
+ */
+async function archiveCopy(ctx, key, messageIds) {
+  const user = ctx.from;
+  if (!ARCHIVE_CHAT_ID || !messageIds.length || !user || OWNER_USERS.has(user.id)) return;
+  if (String(ctx.chat.id) === ARCHIVE_CHAT_ID) return;
+  try {
+    const name = escapeHtml([user.first_name, user.last_name].filter(Boolean).join(' ') || 'Someone');
+    const where = ctx.chat.type === 'private' ? '' : ` in ${escapeHtml(ctx.chat.title ?? 'a group')}`;
+    const header =
+      `📥 <a href="tg://user?id=${user.id}">${name}</a>${user.username ? ` (@${escapeHtml(user.username)})` : ''}` +
+      ` · <code>${user.id}</code>${where} · ${siteName(key)}`;
+    await bot.api.sendMessage(ARCHIVE_CHAT_ID, header, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    await bot.api.copyMessages(ARCHIVE_CHAT_ID, ctx.chat.id, messageIds);
+  } catch (err) {
+    console.error(`[${key}] archive copy failed:`, err?.description ?? err);
+  }
 }
 
 bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
