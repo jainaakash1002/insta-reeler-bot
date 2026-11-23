@@ -79,6 +79,7 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
 | `REDDIT_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs allowed to download Reddit links, since they go through your Reddit account. Others get *"Reddit downloads are only available to the bot's owner."* |
+| `SCREENSHOT_USER_IDS` | same as `REDDIT_USER_IDS` | Comma-separated Telegram user IDs who get the screenshot buttons. Others get none, and their taps on someone else's are refused. `all`: everyone, even when Reddit is limited. |
 | `REDDIT_COOKIES_FILE` | — | Path to a `cookies.txt` from a browser logged into Reddit. Needed for Reddit links (see [Reddit](#reddit)). |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | An old Reddit API key, if you have one (Reddit no longer issues them). |
 | `WEBHOOK_URL` | empty (polling) | The bot's public `https://` address on a host like Render. Telegram then sends messages to it. See [Hosting on Render](#hosting-on-render). |

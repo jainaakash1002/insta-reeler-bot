@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) through Reddit's API public Snapchat Spotlight videos, stories and highlights, and public X (Twitter) posts (photos, videos, GIFs). Every video gets a button that sends evenly spaced frames grabbed with `ffmpeg`. Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) read through a logged-in Reddit account's cookies, public Snapchat Spotlight videos, stories and highlights, and public X (Twitter) posts (photos, videos, GIFs). Videos get a button that sends evenly spaced frames grabbed with `ffmpeg`. A live loader message shows progress. The bot runs on Render (Docker, webhook mode; see Deployment). Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -24,18 +24,29 @@ npm run dev        # same, with --watch (restarts on file changes)
   - Link parsing: `node -e "import('./src/instagram.js').then(m => console.log(m.parseInstagramLink('https://www.instagram.com/reel/ABC123xyz/')))"`
   - `src/instagram.js` and `src/frames.js` have no Telegram dependency and can be imported and called directly, e.g. `downloadMedia('p-<shortcode>', dir)`. `src/bot.js` can't: it starts polling as soon as it is imported (top-level await).
   - To test `yt-dlp` and the plugin directly: `yt-dlp --plugin-dirs ./yt-dlp-plugins -v …`. The verbose output should list `Extractor Plugins: photos (InstagramIE), photos (InstagramStoryIE)`.
-- End-to-end testing needs a real bot token. Run `npm run dev` and message the bot.
+- End-to-end testing needs a real bot token. Run `npm run dev` and message the bot, but not while the Render bot is live: polling removes its webhook (see Deployment).
 - **Webhook mode** (`WEBHOOK_URL`, for hosts that sleep when idle, like Render's free Web Service): `startWebhook` in `bot.js` serves `POST /telegram` on `PORT` (default 3000), checks Telegram's `X-Telegram-Bot-Api-Secret-Token` (sha256 of `webhook:<token>`, so nothing extra to configure), answers 200 at once and then runs `bot.handleUpdate` (an error reply would make Telegram resend the update). Every other request gets `ok` (health check). It calls `setWebhook` at startup. Without `WEBHOOK_URL` the bot long-polls; grammY's `bot.start()` deletes the webhook, so a local `npm start` breaks the hosted bot until it restarts. `Dockerfile` builds the image for Render/Railway/a VPS (see README).
+
+## Deployment
+
+The live bot runs on **Render**, service `insta-reeler-bot` (free Web Service, Docker, Oregon), at `https://insta-reeler-bot.onrender.com`, from `main` of the GitHub repo.
+- **Every push to `main` deploys to production** (auto-deploy, about 3–5 minutes). Commit and push only when the user asks.
+- **Settings live in Render's Environment, not `.env`:** `BOT_TOKEN`, `WEBHOOK_URL=https://insta-reeler-bot.onrender.com`, `ALLOWED_USER_IDS`, `REDDIT_USER_IDS`, `REDDIT_COOKIES_FILE=/etc/secrets/cookies-reddit.txt` (a Secret File), `SCREENSHOT_COUNT=9`, optionally `SCREENSHOT_USER_IDS`. Render sets `PORT` (10000). Changing them redeploys.
+- **The free instance sleeps after 15 minutes idle;** Telegram's webhook POST wakes it (30–60 s). It has 0.1 CPU and 512 MB, so ffmpeg runs one job at a time (`frames.js`).
+- **Logs and events are only in Render's dashboard**; Claude has no access unless a `RENDER_API_KEY` is put in `.env`. Telegram's side can be checked from here with `getWebhookInfo` (url, `pending_update_count`, `last_error_message`), using the token from `.env` without printing it.
+- **Only one copy of the bot may run per token.** A local `npm start`/`npm run dev` polls, which deletes the webhook. Afterwards restart the Render service, or call `setWebhook` with `url=<WEBHOOK_URL>/telegram` and `secret_token` = sha256 hex of `webhook:<token>`. A first deploy without `WEBHOOK_URL` also polls and fails Render's port scan.
+- **Groups:** the bot has group privacy mode on (`can_read_all_group_messages: false`), so in a group it only sees links if it is an admin there (or privacy is disabled in @BotFather and the bot re-added).
+- The local launchd agent was removed (November 2026); the bot only runs locally when started by hand.
 
 ## Architecture
 
-The code is split into four parts:
+The code is split into these parts:
 - `src/bot.js`: Telegram handlers, the download cache, captions and album sending.
 - `src/instagram.js`: Instagram link parsing, `KEY_TYPES`/`requestFor` for every site, share-link resolution and running `yt-dlp`.
 - `src/facebook.js`: Facebook link parsing, share-link resolution, and reading post and photo pages (photos are downloaded here, without yt-dlp).
 - `src/snapchat.js`: Snapchat link parsing, reading the public pages and downloading their media.
 - `src/x.js`: X (Twitter) link parsing, `t.co` resolution, reading a post from the syndication API and downloading its files.
-- `src/reddit.js`: Reddit link parsing, share-link resolution, the API token, reading a post's media and downloading images/MP4s.
+- `src/reddit.js`: Reddit link parsing, share-link resolution, the login cookies (or an old API token), reading a post's media and downloading images/MP4s.
 - `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots and `ensureH264`).
 - `yt-dlp-plugins/`: the yt-dlp plugin.
 
@@ -125,7 +136,7 @@ This depends on yt-dlp internals and Instagram's page format. If photos or stori
 
 **Loader.** `startLoader` (bot.js) sends the status message (`🌑 Downloading from <site>…`, then `Sending N items…`; `Taking N screenshots…` for the buttons), edits it every 1.5 s (4 s in groups, which allow ~20 messages a minute) to cycle the moon phases, and repeats a chat action (`upload_video`/`upload_photo`). `done()` deletes it; `fail(text)` turns it into the ❌ error. Edits are fire-and-forget and never overlap.
 
-**Request flow.** A text message is parsed, then `sendMedia` resolves share links and checks for a login on story keys. It then calls `getMedia(key)` and `deliver`:
+**Request flow.** A text message is parsed (Reddit links from users outside `REDDIT_USER_IDS` are refused here), then `sendMedia` starts the loader, resolves share links and refuses story keys (paused). It then calls `getMedia(key)` and `deliver`:
 - **One item:** sent as a single photo or video, with the caption and, for a video, the screenshot button.
 - **Several items:** sent as albums of up to 10, with the caption on the first item. A chunk with a single item is sent on its own, because Telegram albums need at least 2 items. A follow-up message lists skipped oversize items (over 50 MB for a video, 10 MB for a photo) and carries the screenshot buttons, one row per video.
 
@@ -157,7 +168,7 @@ Videos in stories and highlights (`needsLogin(key)`) get two buttons: **1 screen
 - Captions use `parse_mode: 'HTML'`, so every interpolated value must go through `escapeHtml`.
 - 100 buttons per inline keyboard.
 
-**Access control.** The first middleware allows everyone when `ALLOWED_USER_IDS` is empty, and otherwise only the listed numeric user IDs. Reddit links and Reddit screenshot buttons are further limited to `REDDIT_USER_IDS` (`mayUseReddit`; empty = no extra limit), because they use the owner's Reddit login. `/start` replies with the sender's user ID so the owner can find theirs.
+**Access control.** The first middleware allows everyone when `ALLOWED_USER_IDS` is empty, and otherwise only the listed numeric user IDs. Reddit links and Reddit screenshot buttons are further limited to `REDDIT_USER_IDS` (`mayUseReddit`; empty = no extra limit), because they use the owner's Reddit login. Screenshot buttons are limited to `SCREENSHOT_USER_IDS` (`mayScreenshot`; unset falls back to `REDDIT_USER_IDS`): `deliver` adds no keyboard for others, and the callback handler refuses their taps. `/start` and `/help` reply with `helpText(userId)`: per site what works (✅), what's paused (⏸) and what doesn't (❌), the extras, limits, a group tip and the sender's user ID (so new users can send it to the owner). Reddit shows as 🔒 owner-only and the screenshot line is left out for users without access; the wake-up note only appears in webhook mode. Keep it in step when a site's support changes. Users outside `ALLOWED_USER_IDS` get "Sorry, this bot is private" with their ID in private chats, and silence in groups.
 
 ## Repo note
 

@@ -31,6 +31,12 @@ const ALLOWED_USERS = idSet(process.env.ALLOWED_USER_IDS);
 const REDDIT_USERS = idSet(process.env.REDDIT_USER_IDS);
 const mayUseReddit = (userId) => REDDIT_USERS.size === 0 || REDDIT_USERS.has(userId);
 const REDDIT_OWNER_ONLY = 'Reddit downloads are only available to the bot’s owner.';
+// Screenshot buttons can be limited the same way: SCREENSHOT_USER_IDS, or REDDIT_USER_IDS when
+// it isn't set ("all" or both empty: everyone). Others get no buttons, and a tap on someone else's is refused.
+const screenshotSetting = process.env.SCREENSHOT_USER_IDS?.trim().toLowerCase();
+const SCREENSHOT_USERS = screenshotSetting === 'all' ? new Set() : screenshotSetting ? idSet(screenshotSetting) : REDDIT_USERS;
+const mayScreenshot = (userId) => SCREENSHOT_USERS.size === 0 || SCREENSHOT_USERS.has(userId);
+const SCREENSHOTS_OWNER_ONLY = 'Screenshots are only for the bot’s owner.';
 const SCREENSHOT_COUNT = Math.min(10, Math.max(1, Number(process.env.SCREENSHOT_COUNT) || 6));
 const CACHE_DIR = path.join(os.tmpdir(), 'insta-reel-bot');
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -466,26 +472,48 @@ bot.use(async (ctx, next) => {
   }
 });
 
-bot.command(['start', 'help'], (ctx) =>
-  ctx.reply(
-    '👋 Send me an Instagram, Facebook, Reddit, Snapchat or X link and I’ll send it back here.\n\n' +
-      '✅ Works now\n' +
-      '• Instagram reels and videos\n' +
-      '• Instagram photo posts and carousels (every photo and video in them)\n' +
-      '• Facebook videos, reels, posts and photos (public ones)\n' +
-      '• Reddit videos, images, GIFs and galleries\n' +
-      '• Snapchat Spotlight videos, public stories and highlights\n' +
-      '• X (Twitter) posts: photos, videos and GIFs\n' +
-      `• Screenshots: tap “📸 Get ${SCREENSHOT_COUNT} screenshots” under a video\n` +
-      '• Send or forward me a photo or video and I’ll send it back without its caption\n\n' +
-      // COOKIES PAUSED: when stories are back, move Stories and Highlights up to "Works now",
-      // drop this section, and mention the "📸 1 screenshot" button that story videos get.
-      '⏸ Not working right now\n' +
-      '• Stories\n' +
-      '• Highlights\n\n' +
-      `Your Telegram user ID: ${ctx.from?.id}`,
-  ),
-);
+/** The /start and /help text: per site, what works and what doesn't. HTML, static apart from the numbers. */
+function helpText(userId) {
+  const reddit = mayUseReddit(userId)
+    ? ['👽 <b>Reddit</b>', '✅ Videos (with sound), images, GIFs, galleries', '❌ Text posts, links to other sites (YouTube, …)']
+    : ['👽 <b>Reddit</b>', '🔒 Only for the bot’s owner'];
+  return [
+    '👋 Send me a link and I’ll send the photos and videos back here.',
+    '',
+    '📸 <b>Instagram</b>',
+    '✅ Reels, videos, photo posts, carousels',
+    // COOKIES PAUSED: when stories are back, move them to the ✅ line and mention the "📸 1 screenshot" button.
+    '⏸ Stories and highlights (paused for now)',
+    '❌ Profiles, audio pages, private accounts',
+    '',
+    '📘 <b>Facebook</b>',
+    '✅ Public videos, reels, posts, photos',
+    '❌ Private posts, groups, profiles',
+    '',
+    '👻 <b>Snapchat</b>',
+    '✅ Spotlight videos, public stories, story snaps, highlights',
+    '❌ Spotlights that only open in the app, private snaps, friends’ stories',
+    '',
+    '✖️ <b>X (Twitter)</b>',
+    '✅ Photos, videos and GIFs from public posts',
+    '❌ Protected accounts, sensitive posts',
+    '',
+    ...reddit,
+    '',
+    '🛠 <b>Extras</b>',
+    ...(mayScreenshot(userId) ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`] : []),
+    '• Send or forward me a photo or video: it comes back without caption or “Forwarded from”',
+    '',
+    '👥 In a group, make me an admin so I can see the links people send.',
+    '',
+    '⚠️ Videos up to 50 MB, photos up to 10 MB (Telegram’s limit for bots).' +
+      (process.env.WEBHOOK_URL ? ' After a quiet spell, the first reply can take up to a minute while I wake up.' : ''),
+    '',
+    `Your Telegram user ID: <code>${Number(userId) || '?'}</code>`,
+  ].join('\n');
+}
+
+bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { parse_mode: 'HTML' }));
 
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
 // from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
@@ -614,7 +642,8 @@ async function deliver(ctx, key, media) {
   const sendable = items.filter(fitsTelegram);
   const tooBig = items.filter((item) => !fitsTelegram(item));
   const videos = items.filter((item) => item.kind === 'video');
-  const keyboard = screenshotKeyboard(key, videos);
+  // No buttons for people who may not take screenshots (see SCREENSHOT_USERS)
+  const keyboard = mayScreenshot(ctx.from?.id) ? screenshotKeyboard(key, videos) : undefined;
   const buttons = keyboard ? { reply_markup: keyboard } : {};
   const caption = buildCaption(media, key);
   const single = items.length === 1;
@@ -660,6 +689,7 @@ bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
   const n = Number(ctx.match[2]);
   const key = ctx.match[3];
   if (!requestFor(key)) return ctx.answerCallbackQuery().catch(() => {});
+  if (!mayScreenshot(ctx.from?.id)) return ctx.answerCallbackQuery({ text: SCREENSHOTS_OWNER_ONLY }).catch(() => {});
   if (isReddit(key) && !mayUseReddit(ctx.from?.id)) return ctx.answerCallbackQuery({ text: REDDIT_OWNER_ONLY }).catch(() => {});
   // A tap that waited while the bot was restarting can't be answered any more (Telegram allows
   // ~15 s); that's only the little toast, so still send the screenshots.
