@@ -194,7 +194,8 @@ export async function downloadThreadsPost(key, request, dir) {
 
 /**
  * Finds the first threads.com / threads.net link in `text`. Returns null, { key: 'th-<code>' }
- * for a post (/@user/post/<code>, /t/<code>), or { unsupported: true, site: 'threads' }.
+ * for a post (/@user/post/<code>, /t/<code>), { share, site: 'threads' } for the app's
+ * /share/<code> links (pass to resolveThreadsShareLink), or { unsupported: true, site: 'threads' }.
  */
 export function parseThreadsLink(text) {
   const match = text.match(THREADS_URL);
@@ -206,6 +207,28 @@ export function parseThreadsLink(text) {
     return null;
   }
   const parts = url.pathname.split('/').filter(Boolean);
+  if (parts[0] === 'share' && CODE.test(parts[1] ?? '')) return { share: `https://www.threads.com/share/${parts[1]}`, site: 'threads' };
   const code = parts[0]?.startsWith('@') && parts[1] === 'post' ? parts[2] : parts[0] === 't' ? parts[1] : null;
   return code && CODE.test(code) ? { key: `th-${code}` } : { unsupported: true, site: 'threads' };
+}
+
+/**
+ * Follows a /share/<code> link's redirects (at most 3) to the post. Threads answers a desktop
+ * browser with a page that redirects in JavaScript, but anything else with a 302, so this sends
+ * a curl User-Agent. Returns the post's key, or null.
+ */
+export async function resolveThreadsShareLink(url) {
+  let current = url;
+  for (let hop = 0; hop < 3; hop++) {
+    const res = await fetch(current, { headers: { 'User-Agent': 'curl/8' }, redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const location = res.headers.get('location');
+    if (!location || res.status < 300 || res.status >= 400) return null;
+    const next = new URL(location, current);
+    if (!/^(?:www\.)?threads\.(?:com|net)$/.test(next.hostname)) return null;
+    const link = parseThreadsLink(next.href);
+    if (link?.key) return link.key;
+    if (!link?.share || link.share === current) return null;
+    current = link.share;
+  }
+  return null;
 }

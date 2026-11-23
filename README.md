@@ -19,7 +19,7 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 | Snapchat profile (`snapchat.com/@user`, `/add/user`) | That user's current public story, all snaps |
 | Snapchat highlight (`snapchat.com/@user/highlight/…`) | The whole highlight |
 | X (Twitter) post (`x.com/<user>/status/…`, `twitter.com/…`, `t.co/…` links) | Its photos (full size), video or GIF (as a video), as albums |
-| Threads post (`threads.com/@<user>/post/…`, `threads.net/…`, `/t/…` links) | Its photos and videos, as albums |
+| Threads post (`threads.com/@<user>/post/…`, `threads.net/…`, `/t/…`, `/share/…` links) | Its photos and videos, as albums |
 | Reddit post (`reddit.com/r/…/comments/…`, `redd.it/…`, `v.redd.it/…`, the app's `/s/…` share links) | Its video (with sound), image, GIF (as a video) or whole gallery |
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.

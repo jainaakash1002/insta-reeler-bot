@@ -7,7 +7,7 @@ import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
 import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
-import { parseThreadsLink } from './threads.js';
+import { parseThreadsLink, resolveThreadsShareLink } from './threads.js';
 import { parseXLink, resolveXShareLink } from './x.js';
 import { dropRepeats, ensureH264, extractFrames, ffmpegMode } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
@@ -408,6 +408,9 @@ function describeError(err, key) {
   if (err?.code === 'THREADS_RATE_LIMIT') return 'Threads is limiting requests right now. Try again in a few minutes.';
   if (err?.code === 'THREADS_CHANGED') return 'Threads changed how its website loads posts, so I can’t read them until the bot is updated.';
   if (err?.code === 'NO_MEDIA' && isThreads(key)) return 'That Threads post has no photos or videos.';
+  if (err?.code === 'SHARE_LINK' && err.site === 'threads') {
+    return "I couldn't open that Threads share link. Open it in a browser and send me the threads.com link it lands on.";
+  }
   if (err?.code === 'X_GONE') return 'That X post doesn’t exist anymore, or its account is protected (private).';
   if (err?.code === 'X_HIDDEN') {
     return 'X hides that post from logged-out visitors (it’s marked as sensitive or age-restricted), so I can’t download it.';
@@ -649,7 +652,7 @@ async function sendMedia(ctx, link) {
   });
 
   try {
-    const resolve = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink, x: resolveXShareLink }[link.site] ?? resolveShareLink;
+    const resolve = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink, x: resolveXShareLink, threads: resolveThreadsShareLink }[link.site] ?? resolveShareLink;
     key ??= await resolve(link.share).catch((err) => {
       console.error(`[${link.share}] share link:`, err);
       return null;
