@@ -19,6 +19,7 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 | Snapchat profile (`snapchat.com/@user`, `/add/user`) | That user's current public story, all snaps |
 | Snapchat highlight (`snapchat.com/@user/highlight/…`) | The whole highlight |
 | X (Twitter) post (`x.com/<user>/status/…`, `twitter.com/…`, `t.co/…` links) | Its photos (full size), video or GIF (as a video), as albums |
+| Threads post (`threads.com/@<user>/post/…`, `threads.net/…`, `/t/…` links) | Its photos and videos, as albums |
 | Reddit post (`reddit.com/r/…/comments/…`, `redd.it/…`, `v.redd.it/…`, the app's `/s/…` share links) | Its video (with sound), image, GIF (as a video) or whole gallery |
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
@@ -32,6 +33,8 @@ Once everything from a link has been sent, the bot deletes your message with the
 **Snapchat:** public Spotlight videos, stories and highlights, no login. The bot reads snapchat.com's public pages (yt-dlp's Snapchat support is broken). Text and stickers drawn on a snap aren't included. Private snaps and friends' stories never appear on the web, so they can't be downloaded.
 
 **X (Twitter):** public posts, no login. The bot reads X's public embed API, the one that shows posts embedded on other websites. For a video it picks the best quality that fits Telegram's 50 MB limit. A post with no media of its own gets its quoted post's media. The caption shows `Name (@user)` and an **Open on X** link.
+
+**Threads:** public posts, no login. yt-dlp can't read Threads, so the bot asks Threads for the post the same way its website does (logged out). When Threads updates its site this can stop working until the bot is updated; Threads links then get *"Threads changed how its website loads posts"* and everything else keeps working. Text-only posts have nothing to download.
 
 **Reddit** needs a logged-in Reddit account's cookies (see [Reddit](#reddit)). The caption shows `u/<author> in r/<subreddit>` and an **Open on Reddit** link.
 
@@ -165,6 +168,7 @@ src/facebook.js   Facebook link parsing, post and photo pages
 src/reddit.js     Reddit link parsing, API access, post media
 src/snapchat.js   Snapchat link parsing, Spotlight/story/highlight pages
 src/x.js          X (Twitter) link parsing, embed API, photo/video download
+src/threads.js    Threads link parsing, the website's post query, photo/video download
 src/frames.js     ffmpeg screenshot extraction, H.264 conversion
 yt-dlp-plugins/   yt-dlp plugin: Instagram photos + stories fix
 ```

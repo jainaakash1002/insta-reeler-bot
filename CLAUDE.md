@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) read through a logged-in Reddit account's cookies, public Snapchat Spotlight videos, stories and highlights, and public X (Twitter) posts (photos, videos, GIFs). Videos get a button that sends evenly spaced frames grabbed with `ffmpeg`. A live loader message shows progress. The bot runs on Render (Docker, webhook mode; see Deployment). Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
+A Telegram bot (Node, ESM, [grammY](https://grammy.dev)). A user sends an Instagram link and the bot sends back what's in it: reels, video and photo posts, carousels, stories and highlights. Public Facebook videos, reels, posts (photos and videos) and single photos work too, and so do Reddit posts (videos, images, GIFs, galleries) read through a logged-in Reddit account's cookies, public Snapchat Spotlight videos, stories and highlights, public X (Twitter) posts (photos, videos, GIFs) and public Threads posts (photos, videos, carousels). Videos get a button that sends evenly spaced frames grabbed with `ffmpeg`. A live loader message shows progress. The bot runs on Render (Docker, webhook mode; see Deployment). Downloads go through `yt-dlp`, plus a small yt-dlp plugin in this repo that adds photos and works around Instagram's broken stories API. There is no build step, no TypeScript and only one npm dependency (`grammy`).
 
 ## Commands
 
@@ -46,6 +46,7 @@ The code is split into these parts:
 - `src/facebook.js`: Facebook link parsing, share-link resolution, and reading post and photo pages (photos are downloaded here, without yt-dlp).
 - `src/snapchat.js`: Snapchat link parsing, reading the public pages and downloading their media.
 - `src/x.js`: X (Twitter) link parsing, `t.co` resolution, reading a post from the syndication API and downloading its files.
+- `src/threads.js`: Threads link parsing, reading a post through threads.com's GraphQL and downloading its files.
 - `src/reddit.js`: Reddit link parsing, share-link resolution, the login cookies (or an old API token), reading a post's media and downloading images/MP4s.
 - `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots and `ensureH264`).
 - `yt-dlp-plugins/`: the yt-dlp plugin.
@@ -68,6 +69,7 @@ The code is split into these parts:
 | `scs-<16-char hash>` | A Snapchat Spotlight video (the id is looked up, see below) |
 | `scn-<user>-<16-char hash>` | One snap of a Snapchat user's story (the snap id is looked up the same way) |
 | `x-<post id>` | An X (Twitter) post (`site: 'x'`) |
+| `th-<post code>` | A Threads post (`site: 'threads'`) |
 
 `requestFor(key)` validates a key and rebuilds the canonical URL and the extra yt-dlp arguments from it. A single story needs `--no-playlist`, or yt-dlp downloads all of the user's stories. A single highlight item uses `--match-filters id='<pk in base64>'`. Keys use only `[\w.-]`, because callback data is limited to 64 bytes: `s1:<item n>:<key>` (one screenshot) or `ss:<item n>:<key>` (all `SCREENSHOT_COUNT`), matched by `SCREENSHOT_DATA`.
 
@@ -78,7 +80,7 @@ The code is split into these parts:
 
 `/s/<base64>` links decode to `highlight:<id>`. The `story_media_id` query parameter selects one item.
 
-The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), then `parseRedditLink` (`src/reddit.js`), then `parseSnapchatLink` (`src/snapchat.js`), then `parseXLink` (`src/x.js`). They return the same shapes with `site: 'facebook'`/`'reddit'`/`'snapchat'`/`'x'` on share and unsupported results. A message with none of these links gets no reply; text around a link is ignored.
+The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`src/facebook.js`), then `parseRedditLink` (`src/reddit.js`), then `parseSnapchatLink` (`src/snapchat.js`), then `parseXLink` (`src/x.js`), then `parseThreadsLink` (`src/threads.js`). They return the same shapes with `site: 'facebook'`/`'reddit'`/`'snapchat'`/`'x'`/`'threads'` on share and unsupported results. A message with none of these links gets no reply; text around a link is ignored.
 
 **Facebook.**
 - **Links.** Every video and reel link (`watch/?v=`, `watch/live/?v=`, `video.php?v=`, `reel/<id>`, `<page>/videos/[slug|vb.n/]<id>`) becomes `f-<numeric id>`. `requestFor` always rebuilds `https://www.facebook.com/watch/?v=<id>`, which yt-dlp handles for reels too.
@@ -110,6 +112,13 @@ The text handler tries `parseInstagramLink` first, then `parseFacebookLink` (`sr
 - **Spotlight** (`/spotlight/<id>`, `/@user/spotlight/<id>`): the page is App Router (no `__NEXT_DATA__`); the video is the `VideoObject` in `application/ld+json` (`contentUrl`, `creator.alternateName`/`name`). Ids are ~59 chars, too long for callback data, so the key is `scs-` + 16 chars of the id's SHA-256 (base64url), and `ID_FILE` (`os.tmpdir()/insta-reel-bot-snapchat-ids.json`) maps it back. `requestFor` returns null for an unknown hash (e.g. after the temp folder is cleared).
 - **App share links** (`snapchat.com/t/<code>`) redirect (303) to `story.snapchat.com/u/<user>/<snap id>` (one story snap → `scn-`: the story page, keeping only the snap whose `snapId.value` matches; gone → `SNAP_GONE`) or `story.snapchat.com/o/<id>` (a Spotlight). Some Spotlight pages leave out their own video (only an "up next" list of other videos); `spotlightFromProfile` then looks for the id in the creator's `spotlightHighlights` (only the ~16 newest are on the page), else `SPOTLIGHT_HIDDEN`.
 - Usernames are limited to 15 characters so `ss:<n>:sch-<user>-<uuid>` fits in 64 bytes. Short links (`t.snapchat.com/<code>`, `/t/<code>`) go through `resolveSnapchatShareLink`. Errors carry `source: 'snapchat'`.
+
+**Threads** (`threads.js`, no login).
+- **Source.** yt-dlp has no Threads extractor and the post page holds no post data (the browser loads it later). `session()` GETs `https://www.threads.com/` for the `lsd` token (`"LSD",[],{"token":…}`) and cookies, then `fetchPost` POSTs to `/api/graphql` with `doc_id` = `THREADS_DOC_ID` (the `BarcelonaPostPageTargetQuery`, `28481388384869123` in November 2026; env `THREADS_DOC_ID` overrides it), headers `X-FB-LSD` and `X-IG-App-ID: 238260118697367`, and variables `postID` (the code decoded as Instagram base64, `mediaIdOf`) plus every `__relay_internal__pv__Barcelona<flag>relayprovider` in `FLAGS` set to false. A missing flag gives `missing_required_variable_value`.
+- **When it breaks** (a query error or no token → `THREADS_CHANGED`): open a post in a browser, find the `/api/graphql` POST named `BarcelonaPostPageTargetQuery` in DevTools, copy its `doc_id` and its `__relay_internal__pv__…` variable names. The id is also in the JS bundle module `BarcelonaPostPageTargetQuery_threadsRelayOperation`.
+- **Links.** `threads.com`/`threads.net` `/@<user>/post/<code>` and `/t/<code>` become `th-<code>`; other pages are unsupported. The canonical URL is `https://www.threads.com/t/<code>`.
+- **Media.** `data.media`: `carousel_media[]` or the post itself; each item's `video_versions` (widest first, `pickUrl` HEADs for ≤ 49 MB) else the widest `image_versions2.candidates` (WebP). `media_type` 19 is a text post → `NO_MEDIA`. No media → `THREADS_GONE` (deleted or private). Files only from `*.cdninstagram.com`/`*.fbcdn.net`. Errors carry `source: 'threads'`.
+- **Caption.** `👤 Name (@user)` linking to `threads.com/@<user>`, then `Open on Threads`.
 
 **X (Twitter)** (`x.js`, no login, no API key).
 - **Source.** `https://cdn.syndication.twimg.com/tweet-result?id=<id>&token=<t>`, X's embed API (yt-dlp isn't used). `token` is derived from the id (`tokenFor`, the formula X's embed code uses). Works anonymously from this machine (November 2026).

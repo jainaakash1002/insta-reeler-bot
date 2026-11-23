@@ -7,6 +7,7 @@ import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
 import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
+import { parseThreadsLink } from './threads.js';
 import { parseXLink, resolveXShareLink } from './x.js';
 import { dropRepeats, ensureH264, extractFrames, ffmpegMode } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
@@ -224,10 +225,18 @@ const isFacebook = (key) => siteOf(key) === 'facebook';
 const isReddit = (key) => siteOf(key) === 'reddit';
 const isSnapchat = (key) => siteOf(key) === 'snapchat';
 const isX = (key) => siteOf(key) === 'x';
-const siteName = (key) => ({ facebook: 'Facebook', reddit: 'Reddit', snapchat: 'Snapchat', x: 'X' })[siteOf(key)] ?? 'Instagram';
+const isThreads = (key) => siteOf(key) === 'threads';
+const siteName = (key) =>
+  ({ facebook: 'Facebook', reddit: 'Reddit', snapchat: 'Snapchat', x: 'X', threads: 'Threads' })[siteOf(key)] ?? 'Instagram';
 
 /** A short caption: the account (linking to its profile) and a link to the post or story itself. */
 function buildCaption(media, key) {
+  if (isThreads(key)) {
+    const user = /^[\w.]{1,30}$/.test(media.username ?? '') ? media.username : null;
+    const label = escapeHtml(media.author ? `${media.author} (@${user ?? '?'})` : `@${user}`);
+    const account = user && `👤 <a href="https://www.threads.com/@${user}"><b>${label}</b></a>`;
+    return [account, `🔗 <a href="${escapeHtml(requestFor(key).url)}">Open on Threads</a>`].filter(Boolean).join('\n');
+  }
   if (isX(key)) {
     const user = /^\w{1,30}$/.test(media.username ?? '') ? media.username : null;
     const label = escapeHtml(media.author ? `${media.author} (@${user ?? '?'})` : `@${user}`);
@@ -395,6 +404,10 @@ function describeError(err, key) {
   if (err?.code === 'EXTERNAL_LINK') {
     return `That Reddit post links to ${err.domain ?? 'another site'}. I can only download photos, GIFs and videos hosted on Reddit.`;
   }
+  if (err?.code === 'THREADS_GONE') return 'That Threads post doesn’t exist anymore, or its account is private.';
+  if (err?.code === 'THREADS_RATE_LIMIT') return 'Threads is limiting requests right now. Try again in a few minutes.';
+  if (err?.code === 'THREADS_CHANGED') return 'Threads changed how its website loads posts, so I can’t read them until the bot is updated.';
+  if (err?.code === 'NO_MEDIA' && isThreads(key)) return 'That Threads post has no photos or videos.';
   if (err?.code === 'X_GONE') return 'That X post doesn’t exist anymore, or its account is protected (private).';
   if (err?.code === 'X_HIDDEN') {
     return 'X hides that post from logged-out visitors (it’s marked as sensitive or age-restricted), so I can’t download it.';
@@ -427,12 +440,13 @@ function describeError(err, key) {
   // Only blame Instagram (expired story, login, private post) for errors that came from yt-dlp.
   if (err?.source === 'ffmpeg') return "Couldn't grab screenshots from that video. Try again, or try another video.";
   if (err?.error_code && err?.description) return `Telegram didn't accept it: ${err.description}`; // GrammyError
-  if (!['yt-dlp', 'facebook', 'reddit', 'snapchat', 'x'].includes(err?.source)) return 'Something went wrong on my side. Try again in a bit.';
+  if (!['yt-dlp', 'facebook', 'reddit', 'snapchat', 'x', 'threads'].includes(err?.source)) return 'Something went wrong on my side. Try again in a bit.';
 
   if (/no such option: --plugin-dirs/i.test(detail)) {
     return 'yt-dlp on the machine running the bot is too old. Update it: brew upgrade yt-dlp';
   }
   if (err.killed) return `${siteName(key)} took too long to respond. Try again in a bit.`;
+  if (isThreads(key)) return "Threads didn't return this post. It may be deleted or private. Try again in a minute.";
   if (isX(key)) return "X didn't return this post. It may be deleted or private, or X changed something. Try again in a minute.";
   if (isSnapchat(key)) {
     return (
@@ -513,6 +527,10 @@ function helpText(userId) {
     '✅ Photos, videos and GIFs from public posts',
     '❌ Protected accounts, sensitive posts',
     '',
+    '🧵 <b>Threads</b>',
+    '✅ Photos, videos and carousels from public posts',
+    '❌ Private accounts, profiles, text-only posts',
+    '',
     ...reddit,
     '',
     '🛠 <b>Extras</b>',
@@ -587,10 +605,13 @@ async function resendMedia(chatId, items) {
 
 bot.on('message:text', (ctx) => {
   const text = ctx.message.text;
-  const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text);
+  const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text) ?? parseThreadsLink(text);
   if (!link) return; // plain text without a supported link: ignore it
   if ((link.site === 'reddit' || (link.key && isReddit(link.key))) && !mayUseReddit(ctx.from?.id)) {
     return ctx.reply(REDDIT_OWNER_ONLY, { reply_parameters: { message_id: ctx.message.message_id } });
+  }
+  if (link.unsupported && link.site === 'threads') {
+    return 'From Threads I can download posts with photos or videos. Send a link to the post (… → Copy link).';
   }
   if (link.unsupported && link.site === 'x') {
     return ctx.reply('From X I can download posts with photos, videos or GIFs. Send a link to the post (Share → Copy link).');
