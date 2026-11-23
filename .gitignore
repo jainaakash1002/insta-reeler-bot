@@ -3,3 +3,5 @@ node_modules/
 cookies*.txt
 __pycache__/
 .DS_Store
+# Local plans (PRPs), never committed
+PRPs/
