@@ -208,3 +208,51 @@ export async function ensureH264(videoPath) {
     await fs.rm(temp, { force: true });
   }
 }
+
+/** The video's length in seconds (ffprobe), with `source: 'ffmpeg'` on failure. */
+export async function videoDuration(videoPath) {
+  try {
+    return await probeDuration(videoPath);
+  } catch (err) {
+    throw Object.assign(err, { source: 'ffmpeg' });
+  }
+}
+
+// Clips are re-encoded, which is the heaviest thing the bot does: one at a time on a small host.
+let clipQueue = Promise.resolve();
+
+/**
+ * Writes seconds `start` to `end` of the video to `outFile` as H.264/AAC MP4, cut to the
+ * frame: re-encoded, because a copy (-c copy) can only start at a keyframe (often 1–2 s off).
+ * Errors carry `source: 'ffmpeg'`.
+ */
+export function cutClip(videoPath, outFile, start, end) {
+  const job = clipQueue.then(() =>
+    run(
+      FFMPEG,
+      [
+        '-y',
+        '-loglevel', 'error',
+        '-ss', start.toFixed(3), // before -i: fast seek, and still frame-exact when re-encoding
+        '-i', videoPath,
+        '-t', (end - start).toFixed(3),
+        '-map', '0:v:0',
+        '-map', '0:a:0?', // the audio, if there is any
+        '-c:v', 'libx264',
+        ...THREADS,
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        outFile,
+      ],
+      { timeout: TRANSCODE_TIMEOUT_MS },
+    ).catch((err) => {
+      throw Object.assign(err, { source: 'ffmpeg', clip: true });
+    }),
+  );
+  clipQueue = job.catch(() => {});
+  return job;
+}

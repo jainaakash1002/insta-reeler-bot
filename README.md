@@ -24,6 +24,8 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
 
+Reply to any video with **`/clip 0:05-0:15`** (or `5-15`, `1:05 1:20`) to get just that part, cut to the frame; at most 60 seconds. It works on videos the bot sent and on videos you send it (up to 20 MB, Telegram's download limit for bots). Same access as the screenshot buttons.
+
 Once everything from a link has been sent, the bot deletes your message with the link to keep the chat clean. If something went wrong, the link stays.
 
 **Any photo or video you send or forward to the bot** comes back on its own: same file, no caption, no "Forwarded from" line. Several sent or forwarded together come back as one album (up to 10 per album). Once the copies are sent, the bot deletes the originals you sent or forwarded.

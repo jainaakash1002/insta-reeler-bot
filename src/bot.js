@@ -1,15 +1,18 @@
 import { createHash } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { parseFacebookLink, resolveFacebookShareLink } from './facebook.js';
 import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
 import { parseThreadsLink, resolveThreadsShareLink } from './threads.js';
 import { parseXLink, resolveXShareLink } from './x.js';
-import { dropRepeats, ensureH264, extractFrames, ffmpegMode } from './frames.js';
+import { cutClip, dropRepeats, ensureH264, extractFrames, ffmpegMode, videoDuration } from './frames.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -544,7 +547,9 @@ function helpText(userId) {
     ...reddit,
     '',
     '🛠 <b>Extras</b>',
-    ...(mayScreenshot(userId) ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`] : []),
+    ...(mayScreenshot(userId)
+      ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`, '• ✂️ Reply to a video with /clip 0:05-0:15 to get just that part']
+      : []),
     '• Send or forward me a photo or video: it comes back without caption or “Forwarded from”',
     '',
     '👥 In a group, make me an admin so I can see the links people send.',
@@ -568,6 +573,138 @@ bot.command('chatid', (ctx) => {
     { parse_mode: 'HTML' },
   );
 });
+
+// ---------- /clip ----------
+// Reply to a video with "/clip 0:05-0:15" to get just that part, cut to the frame. Same
+// access as screenshots (SCREENSHOT_USER_IDS). The video comes from Telegram (up to 20 MB, the
+// Bot API's download limit), or, for a bigger video the bot sent, from the download cache
+// (found through its screenshot button or caption link).
+const CLIP_MAX_SECONDS = 60;
+const TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
+const CLIP_USAGE =
+  'Reply to a video with <code>/clip 0:05-0:15</code> to get that part of it.\n' +
+  `Times can be <code>5-15</code>, <code>1:05-1:20</code> or <code>1:02:03-1:02:30</code>. At most ${CLIP_MAX_SECONDS} seconds.`;
+const TIME = String.raw`(\d{1,2}(?::\d{1,2}){0,2}(?:\.\d+)?)`;
+const CLIP_RANGE = new RegExp(String.raw`^${TIME}\s*(?:-|–|—|to|\s)\s*${TIME}$`, 'i');
+
+/** "1:02:03.5" → 3723.5 seconds; NaN if a minutes/seconds part is 60 or more. */
+function parseTime(text) {
+  const parts = text.split(':').map(Number);
+  if (parts.slice(1).some((part) => part >= 60)) return NaN;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+/** 75.5 → "1:15.5", 3723 → "1:02:03". */
+function formatTime(seconds) {
+  const whole = Math.floor(seconds);
+  const fraction = Math.round((seconds - whole) * 10);
+  const [h, m, s] = [Math.floor(whole / 3600), Math.floor(whole / 60) % 60, whole % 60];
+  const clock = h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  return fraction ? `${clock}.${fraction}` : clock;
+}
+
+const clipError = (message) => Object.assign(new Error(message), { clipMessage: message });
+
+/** The video in a message: a video, a GIF (animation) or an MP4 sent as a file. */
+const videoIn = (message) =>
+  message?.video ?? message?.animation ?? (message?.document?.mime_type?.startsWith('video/') ? message.document : undefined);
+
+/** The key and item number behind a video the bot sent: from its screenshot button, else its caption link. */
+async function keyOfBotVideo(message, video) {
+  for (const button of message.reply_markup?.inline_keyboard?.flat() ?? []) {
+    const match = button.callback_data?.match(SCREENSHOT_DATA);
+    if (match && requestFor(match[3])) return { key: match[3], n: Number(match[2]) };
+  }
+  for (const entity of message.caption_entities ?? []) {
+    if (entity.type !== 'text_link') continue;
+    const link =
+      parseInstagramLink(entity.url) ?? parseFacebookLink(entity.url) ?? parseRedditLink(entity.url) ??
+      parseSnapchatLink(entity.url) ?? parseXLink(entity.url) ?? parseThreadsLink(entity.url);
+    if (!link?.key || !requestFor(link.key) || needsLogin(link.key)) continue;
+    const media = await getMedia(link.key);
+    // The video in the post closest in length to the one replied to (posts may hold several).
+    const videos = media.items.map((item, i) => ({ item, n: i + 1 })).filter(({ item }) => item.kind === 'video');
+    const best = videos.sort((a, b) => Math.abs((a.item.duration ?? 0) - video.duration) - Math.abs((b.item.duration ?? 0) - video.duration))[0];
+    if (best) return { key: link.key, n: best.n };
+  }
+  return null;
+}
+
+/** Downloads a file (≤ 20 MB) from Telegram's servers. The URL holds the bot token: never log it. */
+async function downloadFromTelegram(fileId, file) {
+  const { file_path: filePath } = await bot.api.getFile(fileId);
+  const res = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`, { signal: AbortSignal.timeout(5 * 60_000) });
+  if (!res.ok) throw new Error(`Telegram file download failed: HTTP ${res.status}`);
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(file));
+}
+
+bot.command('clip', async (ctx) => {
+  const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
+  if (!mayScreenshot(ctx.from?.id)) return ctx.reply(SCREENSHOTS_OWNER_ONLY, replyOptions);
+  const target = ctx.msg.reply_to_message;
+  const video = videoIn(target);
+  if (!video) return ctx.reply(CLIP_USAGE, { ...replyOptions, parse_mode: 'HTML' });
+  const range = ctx.match.trim().match(CLIP_RANGE);
+  const start = range ? parseTime(range[1]) : NaN;
+  const end = range ? parseTime(range[2]) : NaN;
+  if (!(start >= 0 && end > start)) return ctx.reply(CLIP_USAGE, { ...replyOptions, parse_mode: 'HTML' });
+  if (end - start > CLIP_MAX_SECONDS) return ctx.reply(`A clip can be at most ${CLIP_MAX_SECONDS} seconds.`, replyOptions);
+  sendClip(ctx, target, video, start, end).catch((err) => console.error('sendClip failed:', err));
+});
+
+async function sendClip(ctx, target, video, start, end) {
+  const replyOptions = { reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true } };
+  const label = `${formatTime(start)}–${formatTime(end)}`;
+  const loader = await startLoader(ctx, `Cutting ${label}…`, { replyTo: target.message_id });
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'insta-reel-bot-clip-'));
+  let found = null;
+  try {
+    let source;
+    let caption = '';
+    const fromBot = target.from?.id === ctx.me.id;
+    found = fromBot ? await keyOfBotVideo(target, video) : null;
+    if (found && isReddit(found.key) && !mayUseReddit(ctx.from?.id)) throw clipError(REDDIT_OWNER_ONLY);
+    if (video.file_size && video.file_size <= TELEGRAM_DOWNLOAD_LIMIT) {
+      source = path.join(workDir, 'source');
+      await downloadFromTelegram(video.file_id, source);
+    } else if (found) {
+      const media = await getMedia(found.key); // the cached download, or downloaded again
+      source = media.items[found.n - 1]?.file;
+    }
+    if (!source) {
+      throw clipError(
+        fromBot
+          ? "That video is over 20 MB and I couldn't find where it came from. Send me its link again, then reply to the new one."
+          : 'That video is over 20 MB, the most a bot can download from Telegram. Send me a link to it instead.',
+      );
+    }
+    if (found) caption = buildCaption(await getMedia(found.key), found.key);
+
+    const length = await videoDuration(source);
+    if (!(start < length)) throw clipError(`That video is only ${formatTime(length)} long.`);
+    const stop = Math.min(end, length);
+    const out = path.join(workDir, 'clip.mp4');
+    await cutClip(source, out, start, stop);
+    const size = (await fs.stat(out)).size;
+    if (size > UPLOAD_LIMIT.video) throw clipError('That clip is over 50 MB, too big for Telegram. Try a shorter part.');
+
+    loader.set('Sending the clip…');
+    const header = `✂️ ${formatTime(start)}–${formatTime(stop)}`;
+    await ctx.replyWithVideo(new InputFile(out), {
+      ...videoOptions({ width: video.width, height: video.height, duration: stop - start }),
+      caption: caption ? `${header}\n${caption}` : header,
+      parse_mode: 'HTML',
+      ...replyOptions,
+    });
+    await loader.done();
+    console.log(`[clip] sent ${header} (${(size / 1024 / 1024).toFixed(1)} MB) to chat ${ctx.chat.id}${found ? ` from ${found.key}` : ''}`);
+  } catch (err) {
+    console.error('[clip]', err?.stderr || err);
+    await loader.fail(`❌ ${err.clipMessage ?? (err?.clip ? "Couldn't cut that video. Try again, or try other times." : describeError(err, found?.key ?? ''))}`);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
 
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
 // from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
@@ -629,7 +766,7 @@ bot.on('message:text', (ctx) => {
     return ctx.reply(REDDIT_OWNER_ONLY, { reply_parameters: { message_id: ctx.message.message_id } });
   }
   if (link.unsupported && link.site === 'threads') {
-    return 'From Threads I can download posts with photos or videos. Send a link to the post (… → Copy link).';
+    return ctx.reply('From Threads I can download posts with photos or videos. Send a link to the post (… → Copy link).');
   }
   if (link.unsupported && link.site === 'x') {
     return ctx.reply('From X I can download posts with photos, videos or GIFs. Send a link to the post (Share → Copy link).');
