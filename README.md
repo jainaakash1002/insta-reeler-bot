@@ -83,6 +83,7 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
 | `OWNER_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs of the bot's owner(s). Only they may download Reddit links (they go through your Reddit account; others get *"Reddit downloads are only available to the bot's owner."*) and use `/chatid`, and their downloads aren't copied to `ARCHIVE_CHAT_ID`. Old name: `REDDIT_USER_IDS`, still read when this isn't set. |
 | `ARCHIVE_CHAT_ID` | empty (off) | A chat id (e.g. your private group: add the bot, send `/chatid@<bot username>` there) that gets a copy of everything other users download, after a line naming the user. Users in `OWNER_USER_IDS` aren't copied. |
+| `ARCHIVE_TOPIC_ID` | empty (General) | If the archive group has topics: the topic the copies go to. Send `/chatid@<bot username>` inside that topic; it shows the topic's id too. |
 | `SCREENSHOT_USER_IDS` | same as `OWNER_USER_IDS` | Comma-separated Telegram user IDs who get the screenshot buttons. Others get none, and their taps on someone else's are refused. `all`: everyone, even when Reddit is limited. |
 | `REDDIT_COOKIES_FILE` | — | Path to a `cookies.txt` from a browser logged into Reddit. Needed for Reddit links (see [Reddit](#reddit)). |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | — | An old Reddit API key, if you have one (Reddit no longer issues them). |

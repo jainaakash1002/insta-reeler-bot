@@ -34,6 +34,12 @@ const OWNER_USERS = idSet(process.env.OWNER_USER_IDS ?? process.env.REDDIT_USER_
 const isOwner = (userId) => OWNER_USERS.size === 0 || OWNER_USERS.has(userId);
 // Optional: a chat (e.g. the owner's private group) that gets a copy of what other users download.
 const ARCHIVE_CHAT_ID = process.env.ARCHIVE_CHAT_ID?.trim() || '';
+// In a group with topics, the topic the copies go to (/chatid inside the topic shows its id).
+// Unset: the group's General topic.
+const ARCHIVE_TOPIC_ID = Number(process.env.ARCHIVE_TOPIC_ID) || undefined;
+// In a group with topics, messages sent with bot.api/ctx.api (not ctx.reply*, which does this
+// itself) need the topic's id, or they land in General.
+const topicOf = (msg) => (msg?.is_topic_message ? { message_thread_id: msg.message_thread_id } : {});
 const mayUseReddit = isOwner;
 const REDDIT_OWNER_ONLY = 'Reddit downloads are only available to the bot’s owner.';
 // Screenshot buttons can be limited the same way: SCREENSHOT_USER_IDS, or OWNER_USER_IDS when
@@ -158,6 +164,7 @@ const ACTION_EVERY_MS = 4000; // a chat action shows for 5 s
 
 async function startLoader(ctx, label, { replyTo, action = 'upload_video' } = {}) {
   const chatId = ctx.chat.id;
+  const topic = topicOf(ctx.msg);
   const tickMs = ctx.chat.type === 'private' ? 1500 : 4000;
   let text = label;
   let frame = 0;
@@ -168,13 +175,13 @@ async function startLoader(ctx, label, { replyTo, action = 'upload_video' } = {}
   const showAction = () => {
     if (Date.now() - lastAction < ACTION_EVERY_MS) return;
     lastAction = Date.now();
-    ctx.api.sendChatAction(chatId, action).catch(() => {});
+    ctx.api.sendChatAction(chatId, action, topic).catch(() => {});
   };
 
   const message = await ctx.api.sendMessage(
     chatId,
     render(),
-    replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {},
+    { ...topic, ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}) },
   );
   showAction();
   const timer = setInterval(() => {
@@ -210,7 +217,7 @@ async function startLoader(ctx, label, { replyTo, action = 'upload_video' } = {}
       await ctx.api.editMessageText(chatId, message.message_id, errorText).catch(async (editErr) => {
         console.error(`couldn't edit the status message:`, editErr?.description ?? editErr);
         await ctx.api
-          .sendMessage(chatId, errorText)
+          .sendMessage(chatId, errorText, topic)
           .catch((sendErr) => console.error('Could not send the error either:', sendErr?.description ?? sendErr));
       });
     },
@@ -554,7 +561,12 @@ bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { pars
 // /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (OWNER_USER_IDS).
 bot.command('chatid', (ctx) => {
   if (!isOwner(ctx.from?.id)) return;
-  return ctx.reply(`This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})`, { parse_mode: 'HTML' });
+  const topic = topicOf(ctx.msg).message_thread_id;
+  return ctx.reply(
+    `This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})` +
+      (topic ? `\nThis topic’s ID: <code>${topic}</code>` : ''),
+    { parse_mode: 'HTML' },
+  );
 });
 
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
@@ -562,31 +574,33 @@ bot.command('chatid', (ctx) => {
 // and returned as albums of up to 10, then the originals are deleted. Telegram reuses the
 // files by id; nothing is re-uploaded.
 const COLLECT_MS = 1500; // how long to wait for more photos/videos from the same chat
-const pendingMedia = new Map(); // chat id -> { items, timer }
+const pendingMedia = new Map(); // "<chat id>:<topic id>" -> { items, timer }
 
 bot.on(['message:photo', 'message:video'], (ctx) => {
   const { photo, video, message_id: order } = ctx.message;
   const item = video ? { kind: 'video', file: video.file_id, order } : { kind: 'photo', file: photo.at(-1).file_id, order };
   const chatId = ctx.chat.id;
-  const pending = pendingMedia.get(chatId) ?? { items: [] };
+  const topic = topicOf(ctx.message); // send the copies back into the same topic
+  const slot = `${chatId}:${topic.message_thread_id ?? ''}`;
+  const pending = pendingMedia.get(slot) ?? { items: [] };
   pending.items.push(item);
   clearTimeout(pending.timer);
   pending.timer = setTimeout(() => {
-    pendingMedia.delete(chatId);
-    resendMedia(chatId, pending.items).catch((err) => console.error('Re-sending media failed:', err));
+    pendingMedia.delete(slot);
+    resendMedia(chatId, topic, pending.items).catch((err) => console.error('Re-sending media failed:', err));
   }, COLLECT_MS);
-  pendingMedia.set(chatId, pending);
+  pendingMedia.set(slot, pending);
 });
 
-async function resendMedia(chatId, items) {
+async function resendMedia(chatId, topic, items) {
   items.sort((a, b) => a.order - b.order); // the order they were sent in
   try {
     for (let i = 0; i < items.length; i += ALBUM_LIMIT) {
       const chunk = items.slice(i, i + ALBUM_LIMIT);
       if (chunk.length === 1) {
         const [{ kind, file }] = chunk;
-        if (kind === 'video') await bot.api.sendVideo(chatId, file, { supports_streaming: true });
-        else await bot.api.sendPhoto(chatId, file);
+        if (kind === 'video') await bot.api.sendVideo(chatId, file, { ...topic, supports_streaming: true });
+        else await bot.api.sendPhoto(chatId, file, topic);
         continue;
       }
       await bot.api.sendMediaGroup(
@@ -594,6 +608,7 @@ async function resendMedia(chatId, items) {
         chunk.map(({ kind, file }) =>
           kind === 'video' ? InputMediaBuilder.video(file, { supports_streaming: true }) : InputMediaBuilder.photo(file),
         ),
+        topic,
       );
     }
     // All copies are in the chat: remove the originals the user sent or forwarded.
@@ -602,7 +617,7 @@ async function resendMedia(chatId, items) {
     console.log(`Re-sent ${items.length} photo(s)/video(s) in chat ${chatId}`);
   } catch (err) {
     console.error('Re-sending media failed:', err?.description ?? err);
-    await bot.api.sendMessage(chatId, `❌ ${describeError(err)}`).catch(() => {});
+    await bot.api.sendMessage(chatId, `❌ ${describeError(err)}`, topic).catch(() => {});
   }
 }
 
@@ -745,8 +760,9 @@ async function archiveCopy(ctx, key, messageIds) {
     const header =
       `📥 <a href="tg://user?id=${user.id}">${name}</a>${user.username ? ` (@${escapeHtml(user.username)})` : ''}` +
       ` · <code>${user.id}</code>${where} · ${siteName(key)}`;
-    await bot.api.sendMessage(ARCHIVE_CHAT_ID, header, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
-    await bot.api.copyMessages(ARCHIVE_CHAT_ID, ctx.chat.id, messageIds);
+    const topic = ARCHIVE_TOPIC_ID ? { message_thread_id: ARCHIVE_TOPIC_ID } : {};
+    await bot.api.sendMessage(ARCHIVE_CHAT_ID, header, { ...topic, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    await bot.api.copyMessages(ARCHIVE_CHAT_ID, ctx.chat.id, messageIds, topic);
   } catch (err) {
     console.error(`[${key}] archive copy failed:`, err?.description ?? err);
   }
@@ -841,7 +857,7 @@ try {
 
 const logStarted = (me, mode) =>
   console.log(
-    `@${me.username} is running (${mode}). Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat or X link.` +
+    `@${me.username} is running (${mode}). Open https://t.me/${me.username} and send it an Instagram, Facebook, Reddit, Snapchat, X or Threads link.` +
       (ALLOWED_USERS.size ? ` Allowed users: ${[...ALLOWED_USERS].join(', ')}` : ' (open to everyone)') +
       ` Stories and highlights are paused (search the code for COOKIES PAUSED). ${ffmpegMode}.`,
     // COOKIES PAUSED: (hasLogin() ? '' : ' Stories and highlights are off until Instagram cookies are set in .env.'),

@@ -76,7 +76,22 @@ async function session() {
   return { lsd, cookies };
 }
 
+/**
+ * Reads a post. Threads sometimes answers Render's server with 429 even when it's been quiet,
+ * so a 429 is retried once, after a pause and with a fresh session, before giving up.
+ */
 async function fetchPost(code) {
+  try {
+    return await queryPost(code);
+  } catch (err) {
+    if (err.code !== 'THREADS_RATE_LIMIT') throw err;
+    console.warn(`[th-${code}] ${err.message}; retrying in 5 s`);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return queryPost(code);
+  }
+}
+
+async function queryPost(code) {
   const { lsd, cookies } = await session();
   const variables = { postID: mediaIdOf(code) };
   for (const flag of FLAGS) variables[`__relay_internal__pv__Barcelona${flag}relayprovider`] = false;
@@ -95,8 +110,12 @@ async function fetchPost(code) {
     body: new URLSearchParams({ lsd, doc_id: THREADS_DOC_ID, variables: JSON.stringify(variables) }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  if (res.status === 429) throw threadsError('Threads is rate-limiting requests', { code: 'THREADS_RATE_LIMIT' });
   const text = await res.text();
+  if (res.status === 429) {
+    // What Threads says with it (no cookies or tokens in it), to tell a real limit from a block
+    const why = text.replace(/\s+/g, ' ').slice(0, 300);
+    throw threadsError(`Threads answered the post query with HTTP 429: ${why}`, { code: 'THREADS_RATE_LIMIT' });
+  }
   let body;
   try {
     body = JSON.parse(text.replace(/^for \(;;\);/, ''));
