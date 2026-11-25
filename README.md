@@ -26,6 +26,14 @@ Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resol
 
 Reply to any video with **`/clip 0:05-0:15`** (or `5-15`, `1:05 1:20`) to get just that part, cut to the frame; at most 60 seconds. It works on videos the bot sent and on videos you send it (up to 20 MB, Telegram's download limit for bots). Same access as the screenshot buttons.
 
+Reply to a video with **`/frame 0:12`** to get the picture at that exact moment, or several at once (`/frame 0:12 0:15 0:31`, up to 10). Add `file` (`/frame 0:12 file`) to get them as files, uncompressed by Telegram. Open to everyone who may use the bot.
+
+Reply to a photo, video or album the bot sent with **`/file`** to get the original files as documents, without Telegram's compression (`/file 3` for only item 3). Open to everyone who may use the bot.
+
+**Photos → PDF:** reply to a photo or an album with **`/pdf`** (or `/pdf Notes` to name it `Notes.pdf`), or send an album with `/pdf` as its caption. You get one PDF with an A4 page per photo. Works on albums you sent the bot and on downloaded posts. Open to everyone who may use the bot.
+
+Reply to a photo with **`/sticker`** (or `/sticker 😂` to choose the emoji) to get it as a Telegram sticker; send a PNG with a transparent background as a file to keep the transparency. **➕ Add to my pack** under the sticker adds it to your own pack (created the first time, at `t.me/addstickers/u<your id>_by_<bot>`). Open to everyone who may use the bot.
+
 Once everything from a link has been sent, the bot deletes your message with the link to keep the chat clean. If something went wrong, the link stays.
 
 **Any photo or video you send or forward to the bot** comes back on its own: same file, no caption, no "Forwarded from" line. Several sent or forwarded together come back as one album (up to 10 per album). Once the copies are sent, the bot deletes the originals you sent or forwarded.

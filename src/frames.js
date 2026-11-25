@@ -81,6 +81,22 @@ async function grabFrame(videoPath, file, time) {
 }
 
 /**
+ * Saves the frame at `time` (seconds, exact: ffmpeg decodes from the keyframe before it) as a
+ * full-resolution JPEG. Near the very end, where no frame starts after `time`, takes the last
+ * one before it. Returns false if there is none. Errors carry `source: 'ffmpeg'`.
+ */
+export async function grabFrameAt(videoPath, file, time) {
+  try {
+    for (const at of [time, Math.max(0, time - 0.5), Math.max(0, time - 1)]) {
+      if (await grabFrame(videoPath, file, at)) return true;
+    }
+    return false;
+  } catch (err) {
+    throw Object.assign(err, { source: 'ffmpeg' });
+  }
+}
+
+/**
  * Saves up to `count` evenly spaced frames from the video as full-resolution JPEGs in `outDir`.
  * Each frame is taken from the middle of its slice, so you never get the black first/last frame.
  * Pass `duration` (seconds) if you already know it; otherwise ffprobe reads it.
@@ -255,4 +271,75 @@ export function cutClip(videoPath, outFile, start, end) {
   );
   clipQueue = job.catch(() => {});
   return job;
+}
+
+const STICKER_SIZE = 512; // Telegram: one side exactly 512 px, the other at most 512
+const STICKER_MAX_BYTES = 512 * 1024;
+
+/**
+ * Turns an image into a Telegram sticker: WEBP, longest side 512 px, at most 512 KB,
+ * transparency kept (e.g. a PNG sent as a file). ffmpeg scales to PNG first; the WEBP is
+ * encoded by ffmpeg's libwebp, or by `cwebp` when this ffmpeg has no libwebp (Homebrew's).
+ * Lowers the quality until it fits. Errors carry `source: 'ffmpeg'`.
+ */
+export async function makeSticker(imagePath, outFile) {
+  const png = `${outFile}.png`;
+  try {
+    await run(FFMPEG, [
+      '-y',
+      '-loglevel', 'error',
+      '-i', imagePath,
+      '-frames:v', '1',
+      '-vf', `scale=${STICKER_SIZE}:${STICKER_SIZE}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba`,
+      '-update', '1',
+      png,
+    ]);
+    for (const quality of [90, 75, 60, 40, 20]) {
+      await encodeWebp(png, outFile, quality);
+      if ((await fs.stat(outFile)).size <= STICKER_MAX_BYTES) return outFile;
+    }
+    throw new Error('Sticker is still over 512 KB at the lowest quality');
+  } catch (err) {
+    throw Object.assign(err, { source: 'ffmpeg', sticker: true });
+  } finally {
+    await fs.rm(png, { force: true });
+  }
+}
+
+let ffmpegHasWebp; // checked once
+async function encodeWebp(png, outFile, quality) {
+  if (ffmpegHasWebp !== false) {
+    try {
+      await run(FFMPEG, ['-y', '-loglevel', 'error', '-i', png, '-c:v', 'libwebp', '-quality', String(quality), outFile]);
+      ffmpegHasWebp = true;
+      return;
+    } catch (err) {
+      if (ffmpegHasWebp === true) throw err;
+      ffmpegHasWebp = false; // no libwebp in this ffmpeg: use cwebp from now on
+    }
+  }
+  await run(process.env.CWEBP_PATH || 'cwebp', ['-quiet', '-q', String(quality), '-alpha_q', '100', png, '-o', outFile]);
+}
+
+/**
+ * Converts any image ffmpeg can read (PNG, WEBP, CMYK JPEG, …) to an RGB JPEG for /pdf, with
+ * transparent areas made white. Errors carry `source: 'ffmpeg'`.
+ */
+export async function toJpeg(imagePath, outFile) {
+  try {
+    await run(FFMPEG, [
+      '-y',
+      '-loglevel', 'error',
+      '-i', imagePath,
+      '-f', 'lavfi', '-i', 'color=white',
+      '-filter_complex', '[1][0]scale2ref[bg][img];[bg][img]overlay=shortest=1,format=yuvj420p',
+      '-frames:v', '1',
+      '-q:v', '2',
+      '-update', '1',
+      outFile,
+    ]);
+    return outFile;
+  } catch (err) {
+    throw Object.assign(err, { source: 'ffmpeg' });
+  }
 }

@@ -12,7 +12,8 @@ import { parseRedditLink, resolveRedditShareLink } from './reddit.js';
 import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
 import { parseThreadsLink, resolveThreadsShareLink } from './threads.js';
 import { parseXLink, resolveXShareLink } from './x.js';
-import { cutClip, dropRepeats, ensureH264, extractFrames, ffmpegMode, videoDuration } from './frames.js';
+import { cutClip, dropRepeats, ensureH264, extractFrames, ffmpegMode, grabFrameAt, makeSticker, toJpeg, videoDuration } from './frames.js';
+import { buildPdf, embeddable, jpegInfo } from './pdf.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -363,7 +364,7 @@ async function sendOne(ctx, item, extra = {}) {
  * Sends items as albums of up to 10. `captionOptions` (caption, parse_mode) go on the first
  * item of every album; `messageOptions` (e.g. reply_parameters) on every message.
  */
-async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) {
+async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}, key = undefined) {
   const ids = [];
   for (let i = 0; i < items.length; i += ALBUM_LIMIT) {
     const chunk = items.slice(i, i + ALBUM_LIMIT);
@@ -371,6 +372,7 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) 
     if (chunk.length === 1) {
       const message = await sendOne(ctx, chunk[0], { ...first, ...messageOptions }); // an album needs at least 2 items
       ids.push(message.message_id);
+      if (key) rememberPost(message, key);
       continue;
     }
     const messages = await ctx.replyWithMediaGroup(
@@ -383,6 +385,8 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}) 
       messageOptions,
     );
     ids.push(...messages.map((m) => m.message_id));
+    if (key) messages.forEach((message) => rememberPost(message, key));
+    rememberAlbum(messages); // so /pdf on any item gets the whole album
   }
   return ids;
 }
@@ -552,6 +556,10 @@ function helpText(userId) {
       ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`, '• ✂️ Reply to a video with /clip 0:05-0:15 to get just that part']
       : []),
     '• Send or forward me a photo or video: it comes back without caption or “Forwarded from”',
+    '• 🖼 Reply to a video with /frame 0:12 for the picture at that exact moment (several times work too; add “file” for full quality)',
+    '• 📎 Reply to a photo, video or album I sent with /file to get the originals as files (full quality)',
+    '• 📄 Reply to a photo or album with /pdf to get it as one PDF (A4 pages), or send an album with /pdf as its caption',
+    '• 🎨 Reply to a photo with /sticker (or /sticker 😂) to make it a sticker, then ➕ to add it to your own pack',
     '',
     '👥 In a group, make me an admin so I can see the links people send.',
     '',
@@ -616,17 +624,45 @@ async function keyOfBotVideo(message, video) {
     const match = button.callback_data?.match(SCREENSHOT_DATA);
     if (match && requestFor(match[3])) return { key: match[3], n: Number(match[2]) };
   }
+  const key = postOfMessage(message);
+  if (key) {
+    const media = await getMedia(key);
+    // The video in the post closest in length to the one replied to (posts may hold several).
+    const videos = media.items.map((item, i) => ({ item, n: i + 1 })).filter(({ item }) => item.kind === 'video');
+    const best = videos.sort((a, b) => Math.abs((a.item.duration ?? 0) - video.duration) - Math.abs((b.item.duration ?? 0) - video.duration))[0];
+    if (best) return { key, n: best.n };
+  }
+  return null;
+}
+
+/*
+ * Which post a message the bot sent belongs to: remembered when it was sent (by message id,
+ * and by album, so any item of an album works), else read from its caption's "Open on …"
+ * link. The memory is lost when the bot restarts; captions are on the first item of each album.
+ */
+const sentPosts = new Map(); // "<chat id>:<message id>" or "<chat id>:g<media group id>" -> key
+const SENT_POSTS_MAX = 5000;
+
+function rememberPost(message, key) {
+  for (const id of [message.message_id, message.media_group_id && `g${message.media_group_id}`].filter(Boolean)) {
+    const slot = `${message.chat.id}:${id}`;
+    sentPosts.delete(slot);
+    sentPosts.set(slot, key);
+  }
+  while (sentPosts.size > SENT_POSTS_MAX) sentPosts.delete(sentPosts.keys().next().value);
+}
+
+function postOfMessage(message) {
+  const remembered =
+    sentPosts.get(`${message.chat.id}:${message.message_id}`) ??
+    (message.media_group_id && sentPosts.get(`${message.chat.id}:g${message.media_group_id}`));
+  if (remembered && requestFor(remembered)) return remembered;
   for (const entity of message.caption_entities ?? []) {
     if (entity.type !== 'text_link') continue;
     const link =
       parseInstagramLink(entity.url) ?? parseFacebookLink(entity.url) ?? parseRedditLink(entity.url) ??
       parseSnapchatLink(entity.url) ?? parseXLink(entity.url) ?? parseThreadsLink(entity.url);
-    if (!link?.key || !requestFor(link.key) || needsLogin(link.key)) continue;
-    const media = await getMedia(link.key);
-    // The video in the post closest in length to the one replied to (posts may hold several).
-    const videos = media.items.map((item, i) => ({ item, n: i + 1 })).filter(({ item }) => item.kind === 'video');
-    const best = videos.sort((a, b) => Math.abs((a.item.duration ?? 0) - video.duration) - Math.abs((b.item.duration ?? 0) - video.duration))[0];
-    if (best) return { key: link.key, n: best.n };
+    if (link?.key && requestFor(link.key) && !needsLogin(link.key)) return link.key;
   }
   return null;
 }
@@ -637,6 +673,34 @@ async function downloadFromTelegram(fileId, file) {
   const res = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`, { signal: AbortSignal.timeout(5 * 60_000) });
   if (!res.ok) throw new Error(`Telegram file download failed: HTTP ${res.status}`);
   await pipeline(Readable.fromWeb(res.body), createWriteStream(file));
+}
+
+/**
+ * The file of the video replied to, for /clip and /frame: downloaded from Telegram (≤ 20 MB),
+ * else, for a video the bot sent, its cached download. Returns { source, found, caption }
+ * (found/caption only when the post is known). Throws clipError with a message for the user.
+ */
+async function videoSource(ctx, target, video, workDir) {
+  const fromBot = target.from?.id === ctx.me.id;
+  const found = fromBot ? await keyOfBotVideo(target, video) : null;
+  if (found && isReddit(found.key) && !mayUseReddit(ctx.from?.id)) throw clipError(REDDIT_OWNER_ONLY);
+  let source;
+  if (video.file_size && video.file_size <= TELEGRAM_DOWNLOAD_LIMIT) {
+    source = path.join(workDir, 'source');
+    await downloadFromTelegram(video.file_id, source);
+  } else if (found) {
+    const media = await getMedia(found.key); // the cached download, or downloaded again
+    source = media.items[found.n - 1]?.file;
+  }
+  if (!source) {
+    throw clipError(
+      fromBot
+        ? "That video is over 20 MB and I couldn't find where it came from. Send me its link again, then reply to the new one."
+        : 'That video is over 20 MB, the most a bot can download from Telegram. Send me a link to it instead.',
+    );
+  }
+  const caption = found ? buildCaption(await getMedia(found.key), found.key) : '';
+  return { source, found, caption };
 }
 
 bot.command('clip', async (ctx) => {
@@ -660,26 +724,9 @@ async function sendClip(ctx, target, video, start, end) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'insta-reel-bot-clip-'));
   let found = null;
   try {
-    let source;
-    let caption = '';
-    const fromBot = target.from?.id === ctx.me.id;
-    found = fromBot ? await keyOfBotVideo(target, video) : null;
-    if (found && isReddit(found.key) && !mayUseReddit(ctx.from?.id)) throw clipError(REDDIT_OWNER_ONLY);
-    if (video.file_size && video.file_size <= TELEGRAM_DOWNLOAD_LIMIT) {
-      source = path.join(workDir, 'source');
-      await downloadFromTelegram(video.file_id, source);
-    } else if (found) {
-      const media = await getMedia(found.key); // the cached download, or downloaded again
-      source = media.items[found.n - 1]?.file;
-    }
-    if (!source) {
-      throw clipError(
-        fromBot
-          ? "That video is over 20 MB and I couldn't find where it came from. Send me its link again, then reply to the new one."
-          : 'That video is over 20 MB, the most a bot can download from Telegram. Send me a link to it instead.',
-      );
-    }
-    if (found) caption = buildCaption(await getMedia(found.key), found.key);
+    const got = await videoSource(ctx, target, video, workDir);
+    const { source, caption } = got;
+    found = got.found;
 
     const length = await videoDuration(source);
     if (!(start < length)) throw clipError(`That video is only ${formatTime(length)} long.`);
@@ -707,6 +754,382 @@ async function sendClip(ctx, target, video, start, end) {
   }
 }
 
+// ---------- /frame ----------
+// Reply to a video with "/frame 0:12" (or several times, "/frame 0:12 0:15 0:31") to get the
+// exact frame at each time as a full-resolution picture; add "file" to get them as files
+// (uncompressed by Telegram). Open to everyone who may use the bot.
+const FRAME_MAX = 10;
+const FRAME_USAGE =
+  'Reply to a video with <code>/frame 0:12</code> to get the picture at that moment.\n' +
+  `Several at once: <code>/frame 0:12 0:15 0:31</code> (up to ${FRAME_MAX}). Add <code>file</code> to get them uncompressed.`;
+const FRAME_TIME = new RegExp(`^${TIME}$`);
+
+bot.command('frame', (ctx) => {
+  const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
+  const target = ctx.msg.reply_to_message;
+  const video = videoIn(target);
+  const words = ctx.match.trim().split(/[\s,]+/).filter(Boolean);
+  const asFile = words.at(-1)?.toLowerCase() === 'file';
+  if (asFile) words.pop();
+  const times = words.map((word) => (FRAME_TIME.test(word) ? parseTime(word) : NaN));
+  if (!video || !times.length || times.some((time) => !(time >= 0))) {
+    return ctx.reply(FRAME_USAGE, { ...replyOptions, parse_mode: 'HTML' });
+  }
+  if (times.length > FRAME_MAX) return ctx.reply(`At most ${FRAME_MAX} times at once.`, replyOptions);
+  sendFrames(ctx, target, video, [...new Set(times)], asFile).catch((err) => console.error('sendFrames failed:', err));
+});
+
+async function sendFrames(ctx, target, video, times, asFile) {
+  const replyOptions = { reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true } };
+  const loader = await startLoader(ctx, times.length === 1 ? `Grabbing ${formatTime(times[0])}…` : `Grabbing ${times.length} frames…`, {
+    replyTo: target.message_id,
+    action: asFile ? 'upload_document' : 'upload_photo',
+  });
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'insta-reel-bot-frame-'));
+  let found = null;
+  try {
+    const got = await videoSource(ctx, target, video, workDir);
+    found = got.found;
+    const length = await videoDuration(got.source);
+    const frames = [];
+    for (const [i, time] of times.entries()) {
+      if (!(time < length)) continue;
+      const file = path.join(workDir, `frame-${String(i + 1).padStart(2, '0')}-${formatTime(time).replace(/[:.]/g, '_')}.jpg`);
+      if (await grabFrameAt(got.source, file, time)) frames.push({ file, time });
+    }
+    if (!frames.length) throw clipError(`That video is only ${formatTime(length)} long.`);
+    const skipped = times.length - frames.length;
+
+    loader.set(frames.length === 1 ? 'Sending the frame…' : `Sending ${frames.length} frames…`);
+    const header = `🖼 ${frames.map(({ time }) => formatTime(time)).join(', ')}` + (skipped ? ` (${skipped} past the end of the video)` : '');
+    const caption = got.caption ? `${header}\n${got.caption}` : header;
+    if (asFile) {
+      if (frames.length === 1) await ctx.replyWithDocument(new InputFile(frames[0].file), { caption, parse_mode: 'HTML', ...replyOptions });
+      else {
+        await ctx.replyWithMediaGroup(
+          frames.map(({ file }, j) => InputMediaBuilder.document(new InputFile(file), j === frames.length - 1 ? { caption, parse_mode: 'HTML' } : {})),
+          replyOptions,
+        );
+      }
+    } else {
+      await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), { caption, parse_mode: 'HTML' }, replyOptions);
+    }
+    await loader.done();
+    console.log(`[frame] sent ${frames.length} frame(s)${asFile ? ' as files' : ''} to chat ${ctx.chat.id}${found ? ` from ${found.key}` : ''}`);
+  } catch (err) {
+    console.error('[frame]', err?.stderr || err);
+    await loader.fail(`❌ ${err.clipMessage ?? (err?.source === 'ffmpeg' ? "Couldn't grab that frame. Try again, or try another time." : describeError(err, found?.key ?? ''))}`);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
+// ---------- /file ----------
+// Reply to a photo or video the bot sent (any item of an album) with "/file" to get the whole
+// post as files: the downloaded originals, which Telegram doesn't recompress. "/file 3" sends
+// only item 3. Open to everyone who may use the bot. Re-uploads, so it uses bandwidth.
+const FILE_USAGE =
+  'Reply to a photo, video or album I sent with <code>/file</code> to get the originals as files (full quality).\n' +
+  '<code>/file 3</code> sends only item 3.';
+
+bot.command('file', (ctx) => {
+  const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
+  const target = ctx.msg.reply_to_message;
+  const hasMedia = target?.photo || videoIn(target);
+  if (!hasMedia) return ctx.reply(FILE_USAGE, { ...replyOptions, parse_mode: 'HTML' });
+  const key = target.from?.id === ctx.me.id ? postOfMessage(target) : null;
+  if (!key) {
+    return ctx.reply(
+      target.from?.id === ctx.me.id
+        ? "I don't know which post that came from any more. Send me its link again, then reply /file to the new one."
+        : 'I only have the originals of things I downloaded. Reply /file to a photo or video I sent.',
+      replyOptions,
+    );
+  }
+  if (isReddit(key) && !mayUseReddit(ctx.from?.id)) return ctx.reply(REDDIT_OWNER_ONLY, replyOptions);
+  const arg = ctx.match.trim();
+  const only = /^\d{1,3}$/.test(arg) ? Number(arg) : undefined;
+  if (arg && !only) return ctx.reply(FILE_USAGE, { ...replyOptions, parse_mode: 'HTML' });
+  sendFiles(ctx, target, key, only).catch((err) => console.error(`[${key}] sendFiles failed:`, err));
+});
+
+async function sendFiles(ctx, target, key, only) {
+  const replyOptions = { reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true } };
+  const loader = await startLoader(ctx, 'Getting the original files…', { replyTo: target.message_id, action: 'upload_document' });
+  try {
+    const media = await getMedia(key); // the cached download, or downloaded again
+    const all = media.items.map((item, i) => ({ ...item, n: i + 1 }));
+    if (only && !all[only - 1]) throw clipError(`This post has only ${all.length} item${all.length === 1 ? '' : 's'}.`);
+    const wanted = only ? [all[only - 1]] : all;
+    const files = wanted.filter((item) => (item.size ?? 0) <= UPLOAD_LIMIT.video); // documents: 50 MB
+    if (!files.length) throw clipError('That file is over 50 MB, too big for Telegram.');
+    const caption = buildCaption(media, key);
+    const named = (item) => new InputFile(item.file, `${key}-${String(item.n).padStart(2, '0')}${path.extname(item.file)}`);
+
+    loader.set(files.length === 1 ? 'Sending the file…' : `Sending ${files.length} files…`);
+    for (let i = 0; i < files.length; i += ALBUM_LIMIT) {
+      const chunk = files.slice(i, i + ALBUM_LIMIT);
+      if (chunk.length === 1) {
+        await ctx.replyWithDocument(named(chunk[0]), { caption, parse_mode: 'HTML', ...replyOptions });
+        continue;
+      }
+      await ctx.replyWithMediaGroup(
+        chunk.map((item, j) => InputMediaBuilder.document(named(item), j === chunk.length - 1 ? { caption, parse_mode: 'HTML' } : {})),
+        replyOptions,
+      );
+    }
+    const skipped = wanted.length - files.length;
+    if (skipped) await ctx.reply(`⚠️ ${skipped} file${skipped === 1 ? ' is' : 's are'} over 50 MB, too big for Telegram.`, replyOptions);
+    await loader.done();
+    console.log(`[${key}] sent ${files.length} file(s) to chat ${ctx.chat.id}`);
+  } catch (err) {
+    console.error(`[${key}] /file`, err?.stderr || err);
+    await loader.fail(`❌ ${err.clipMessage ?? describeError(err, key)}`);
+  }
+}
+
+// ---------- /sticker ----------
+// Reply to a photo (or an image sent as a file, which keeps transparency) with "/sticker" or
+// "/sticker 😂" to get it as a Telegram sticker, or send a photo with /sticker as its caption.
+// "➕ Add to my pack" puts it in the tapping user's own pack (created on first use, owned by
+// them). Open to everyone who may use the bot.
+const STICKER_EMOJI = '🙂';
+const STICKER_PACK_DATA = 'sp';
+const STICKER_USAGE =
+  'Reply to a photo with <code>/sticker</code> (or <code>/sticker 😂</code> to pick its emoji) to turn it into a sticker.\n' +
+  'Tip: send a PNG with a transparent background <b>as a file</b> to keep the transparency.';
+
+/** The image in a message: the largest photo size, or a PNG/JPEG/WEBP sent as a file. */
+const imageIn = (message) =>
+  message?.photo?.at(-1) ??
+  (/^image\/(png|jpeg|webp)$/.test(message?.document?.mime_type ?? '') ? message.document : undefined);
+
+/** The first emoji in `text`, else the default. */
+function stickerEmoji(text) {
+  for (const { segment } of new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(text ?? '')) {
+    if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment)) return segment;
+  }
+  return STICKER_EMOJI;
+}
+
+// The user's own pack: t.me/addstickers/<name>. Names must end in _by_<bot username>.
+const packName = (userId) => `u${userId}_by_${bot.botInfo.username}`;
+
+bot.command('sticker', (ctx) => {
+  // A photo with "/sticker" as its caption, or a reply to one.
+  const target = imageIn(ctx.msg) ? ctx.msg : ctx.msg.reply_to_message;
+  const image = imageIn(target);
+  if (!image) return ctx.reply(STICKER_USAGE, { parse_mode: 'HTML', reply_parameters: { message_id: ctx.msg.message_id } });
+  if (image.file_size && image.file_size > TELEGRAM_DOWNLOAD_LIMIT) {
+    return ctx.reply('That image is over 20 MB, the most a bot can download from Telegram.', {
+      reply_parameters: { message_id: ctx.msg.message_id },
+    });
+  }
+  sendSticker(ctx, target, image, stickerEmoji(ctx.match)).catch((err) => console.error('sendSticker failed:', err));
+});
+
+async function sendSticker(ctx, target, image, emoji) {
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'insta-reel-bot-sticker-'));
+  try {
+    await ctx.replyWithChatAction('choose_sticker').catch(() => {});
+    const source = path.join(workDir, 'source');
+    await downloadFromTelegram(image.file_id, source);
+    const webp = await makeSticker(source, path.join(workDir, 'sticker.webp'));
+    await ctx.replyWithSticker(new InputFile(webp), {
+      emoji,
+      reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true },
+      reply_markup: new InlineKeyboard().text('➕ Add to my pack', STICKER_PACK_DATA),
+    });
+    console.log(`[sticker] sent ${emoji} sticker to chat ${ctx.chat.id}`);
+  } catch (err) {
+    console.error('[sticker]', err?.stderr || err);
+    const text = err?.sticker ? "Couldn't turn that image into a sticker. Try another one." : describeError(err, '');
+    await ctx.reply(`❌ ${text}`, { reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true } }).catch(() => {});
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
+// "➕ Add to my pack": adds the sticker to the tapping user's pack, creating it the first time.
+bot.callbackQuery(STICKER_PACK_DATA, async (ctx) => {
+  const sticker = ctx.callbackQuery.message?.sticker;
+  const user = ctx.from;
+  if (!sticker) return ctx.answerCallbackQuery().catch(() => {});
+  const name = packName(user.id);
+  const input = { sticker: sticker.file_id, format: 'static', emoji_list: [sticker.emoji || STICKER_EMOJI] };
+  try {
+    const exists = await bot.api.getStickerSet(name).then(
+      () => true,
+      (err) => (/STICKERSET_INVALID/i.test(err?.description ?? '') ? false : Promise.reject(err)),
+    );
+    if (exists) {
+      await bot.api.addStickerToSet(user.id, name, input);
+      await ctx.answerCallbackQuery({ text: '✅ Added to your sticker pack' }).catch(() => {});
+    } else {
+      const title = `${user.first_name || 'My'}’s stickers`.slice(0, 64);
+      await bot.api.createNewStickerSet(user.id, name, title, [input]);
+      await ctx.answerCallbackQuery({ text: '✅ Pack created' }).catch(() => {});
+      await ctx.reply(
+        `✅ Created your sticker pack. Open it to add it to Telegram: https://t.me/addstickers/${name}\n` +
+          'Every ➕ you tap adds to the same pack. Rename or reorder it with @Stickers.',
+        { link_preview_options: { is_disabled: true } },
+      );
+    }
+    console.log(`[sticker] ${exists ? 'added to' : 'created'} pack ${name}`);
+  } catch (err) {
+    const detail = err?.description ?? String(err);
+    console.error(`[sticker] pack ${name}:`, detail);
+    const text = /STICKERS_TOO_MUCH/i.test(detail)
+      ? 'Your pack is full (120 stickers). Remove some with @Stickers.'
+      : /PEER_ID_INVALID|USER_IS_BOT|bot was blocked|can't initiate/i.test(detail)
+        ? 'Open a private chat with me and press Start first, then tap ➕ again.'
+        : "Couldn't add it to your pack. Try again in a bit.";
+    await ctx.answerCallbackQuery({ text, show_alert: true }).catch(() => {});
+  }
+});
+
+// ---------- /pdf ----------
+// Photos → one PDF (A4 pages, src/pdf.js), open to everyone who may use the bot:
+// - reply to a photo, or any item of an album, with "/pdf [name]": that photo, or the whole album;
+// - or send an album (or one photo/image file) with "/pdf [name]" as its caption.
+// The Bot API can't fetch an album's other messages, so every album the bot sends (re-sent
+// media and downloads) is remembered by its media group id (sentAlbums, lost on restart).
+const PDF_MAX_PAGES = 50;
+const PDF_USAGE =
+  'Reply to a photo or an album with <code>/pdf</code> to get it as one PDF (A4 pages). ' +
+  '<code>/pdf Notes</code> names it Notes.pdf.\nOr send an album with <code>/pdf</code> as its caption.';
+const pdfAlbums = new Map(); // "<chat>:<media group id>" -> { pages, name, timer }: albums captioned /pdf, arriving
+const sentAlbums = new Map(); // "<chat>:g<media group id>" -> pages of an album the bot sent
+const SENT_ALBUMS_MAX = 2000;
+
+/** The image in a message as a PDF page: the largest photo size, or an image sent as a file. */
+const pdfPageOf = (message) => {
+  const image = imageIn(message);
+  return image ? { fileId: image.file_id, size: image.file_size ?? 0, order: message.message_id } : null;
+};
+
+/** Remembers the photos of an album the bot sent, so /pdf on any item of it gets them all. */
+function rememberAlbum(messages) {
+  const group = messages[0]?.media_group_id;
+  if (!group) return;
+  const pages = messages.map(pdfPageOf).filter(Boolean);
+  if (!pages.length) return;
+  sentAlbums.set(`${messages[0].chat.id}:g${group}`, pages);
+  while (sentAlbums.size > SENT_ALBUMS_MAX) sentAlbums.delete(sentAlbums.keys().next().value);
+}
+
+/** "Notes 2026" → "Notes 2026.pdf"; nothing usable → "photos-2026-11-26.pdf". */
+function pdfFileName(text) {
+  const name = (text ?? '').replace(/[^\p{L}\p{M}\p{N} ._()-]+/gu, '').replace(/^[.\s]+/, '').trim().slice(0, 60).replace(/\.pdf$/i, '');
+  return `${name || `photos-${new Date().toISOString().slice(0, 10)}`}.pdf`;
+}
+
+bot.command('pdf', (ctx) => {
+  const name = pdfFileName(ctx.match);
+  const own = pdfPageOf(ctx.msg);
+  // An album with /pdf as its caption: its other items arrive as separate messages.
+  if (own && ctx.msg.media_group_id) {
+    const slot = `${ctx.chat.id}:${ctx.msg.media_group_id}`;
+    const album = pdfAlbums.get(slot) ?? { pages: [] };
+    album.name = name;
+    album.pages.push(own, ...takePendingAlbumItems(ctx.chat.id, ctx.msg));
+    pdfAlbums.set(slot, album);
+    schedulePdfAlbum(ctx, slot, album);
+    return;
+  }
+  if (own) return makePdf(ctx, [own], name, ctx.msg.message_id).catch((err) => console.error('[pdf] failed:', err));
+
+  // A reply to a photo or an album item.
+  const target = ctx.msg.reply_to_message;
+  const page = pdfPageOf(target);
+  if (!page) return ctx.reply(PDF_USAGE, { parse_mode: 'HTML', reply_parameters: { message_id: ctx.msg.message_id } });
+  const remembered = target.media_group_id && sentAlbums.get(`${ctx.chat.id}:g${target.media_group_id}`);
+  const pages = remembered || [page];
+  const note =
+    target.media_group_id && !remembered
+      ? 'Only the photo you replied to: I no longer remember the rest of that album. Send the photos again to get them all.'
+      : '';
+  makePdf(ctx, pages, name, target.message_id, note).catch((err) => console.error('[pdf] failed:', err));
+});
+
+/** Album items that arrived before the /pdf caption went to the re-send queue: take them back. */
+function takePendingAlbumItems(chatId, message) {
+  const pending = pendingMedia.get(`${chatId}:${topicOf(message).message_thread_id ?? ''}`);
+  if (!pending) return [];
+  const mine = pending.items.filter((item) => item.group === message.media_group_id && item.kind === 'photo');
+  pending.items = pending.items.filter((item) => !mine.includes(item));
+  return mine.map((item) => ({ fileId: item.file, size: item.size ?? 0, order: item.order }));
+}
+
+/** Builds a /pdf-captioned album's PDF once none of its items came for COLLECT_MS. */
+function schedulePdfAlbum(ctx, slot, album) {
+  clearTimeout(album.timer);
+  album.timer = setTimeout(() => {
+    pdfAlbums.delete(slot);
+    const first = Math.min(...album.pages.map((page) => page.order));
+    makePdf(ctx, album.pages, album.name, first).catch((err) => console.error('[pdf] album failed:', err));
+  }, COLLECT_MS);
+}
+
+/** Called first for every photo/image file: keeps it if its album is captioned /pdf. Returns true if taken. */
+function takeForPdf(ctx) {
+  const message = ctx.message;
+  const album = message.media_group_id && pdfAlbums.get(`${ctx.chat.id}:${message.media_group_id}`);
+  const page = album && pdfPageOf(message);
+  if (!page) return false;
+  album.pages.push(page);
+  schedulePdfAlbum(ctx, `${ctx.chat.id}:${message.media_group_id}`, album);
+  return true;
+}
+
+/** Downloads the pages from Telegram and sends them back as one PDF. */
+async function makePdf(ctx, pages, name, replyTo, note = '') {
+  const sorted = [...pages].sort((a, b) => a.order - b.order).slice(0, PDF_MAX_PAGES);
+  const loader = await startLoader(ctx, `Making the PDF (${sorted.length} page${sorted.length === 1 ? '' : 's'})…`, {
+    replyTo,
+    action: 'upload_document',
+  });
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'insta-reel-bot-pdf-'));
+  try {
+    const tooBig = sorted.filter((page) => page.size > TELEGRAM_DOWNLOAD_LIMIT).length;
+    const usable = sorted.filter((page) => page.size <= TELEGRAM_DOWNLOAD_LIMIT);
+    if (!usable.length) throw clipError('Those images are over 20 MB, the most a bot can download from Telegram.');
+    const jpegs = [];
+    for (const [i, page] of usable.entries()) {
+      const source = path.join(workDir, `page-${String(i + 1).padStart(2, '0')}`);
+      await downloadFromTelegram(page.fileId, source);
+      const info = jpegInfo(await fs.readFile(source));
+      jpegs.push(embeddable(info) ? source : await toJpeg(source, `${source}.jpg`));
+    }
+    const pdf = await buildPdf(jpegs, path.join(workDir, 'out.pdf'));
+    const size = (await fs.stat(pdf)).size;
+    if (size > UPLOAD_LIMIT.video) throw clipError('That PDF would be over 50 MB, too big for Telegram. Try fewer photos.');
+    loader.set('Sending the PDF…');
+    const notes = [
+      tooBig ? `⚠️ ${tooBig} image${tooBig === 1 ? ' was' : 's were'} over 20 MB and left out.` : '',
+      note ? `⚠️ ${note}` : '',
+    ].filter(Boolean);
+    await ctx.replyWithDocument(new InputFile(pdf, name), {
+      caption: [`📄 ${jpegs.length} page${jpegs.length === 1 ? '' : 's'}`, ...notes].join('\n'),
+      reply_parameters: { message_id: replyTo, allow_sending_without_reply: true },
+    });
+    await loader.done();
+    console.log(`[pdf] sent ${jpegs.length} page(s), ${(size / 1024 / 1024).toFixed(1)} MB, to chat ${ctx.chat.id}`);
+  } catch (err) {
+    console.error('[pdf]', err?.stderr || err);
+    await loader.fail(
+      `❌ ${err.clipMessage ?? (err?.source === 'ffmpeg' ? "Couldn't read one of those images. Try sending it as a photo." : describeError(err, ''))}`,
+    );
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
+// Images sent as files: only used for an album captioned /pdf (otherwise files are ignored).
+bot.on('message:document', (ctx) => {
+  takeForPdf(ctx);
+});
+
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
 // from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
 // and returned as albums of up to 10, then the originals are deleted. Telegram reuses the
@@ -715,8 +1138,11 @@ const COLLECT_MS = 1500; // how long to wait for more photos/videos from the sam
 const pendingMedia = new Map(); // "<chat id>:<topic id>" -> { items, timer }
 
 bot.on(['message:photo', 'message:video'], (ctx) => {
-  const { photo, video, message_id: order } = ctx.message;
-  const item = video ? { kind: 'video', file: video.file_id, order } : { kind: 'photo', file: photo.at(-1).file_id, order };
+  if (takeForPdf(ctx)) return; // a photo for a PDF being collected (/pdf)
+  const { photo, video, message_id: order, media_group_id: group } = ctx.message;
+  const item = video
+    ? { kind: 'video', file: video.file_id, order, group }
+    : { kind: 'photo', file: photo.at(-1).file_id, size: photo.at(-1).file_size, order, group };
   const chatId = ctx.chat.id;
   const topic = topicOf(ctx.message); // send the copies back into the same topic
   const slot = `${chatId}:${topic.message_thread_id ?? ''}`;
@@ -725,6 +1151,7 @@ bot.on(['message:photo', 'message:video'], (ctx) => {
   clearTimeout(pending.timer);
   pending.timer = setTimeout(() => {
     pendingMedia.delete(slot);
+    if (!pending.items.length) return; // all taken for a PDF (/pdf album)
     resendMedia(chatId, topic, pending.items).catch((err) => console.error('Re-sending media failed:', err));
   }, COLLECT_MS);
   pendingMedia.set(slot, pending);
@@ -741,13 +1168,14 @@ async function resendMedia(chatId, topic, items) {
         else await bot.api.sendPhoto(chatId, file, topic);
         continue;
       }
-      await bot.api.sendMediaGroup(
+      const sent = await bot.api.sendMediaGroup(
         chatId,
         chunk.map(({ kind, file }) =>
           kind === 'video' ? InputMediaBuilder.video(file, { supports_streaming: true }) : InputMediaBuilder.photo(file),
         ),
         topic,
       );
+      rememberAlbum(sent); // so /pdf on any of them gets the whole album
     }
     // All copies are in the chat: remove the originals the user sent or forwarded.
     // (Only after full success; if sending failed above, they stay.)
@@ -759,10 +1187,27 @@ async function resendMedia(chatId, topic, items) {
   }
 }
 
+/**
+ * A message with a link the bot doesn't support gets a short general reply listing what does
+ * work, instead of silence. Only in private chats: in groups people share all kinds of links
+ * that aren't meant for the bot. Plain text without a link is still ignored.
+ */
+function replyUnsupportedSite(ctx) {
+  if (ctx.chat.type !== 'private') return;
+  const hasLink = (ctx.message.entities ?? []).some((entity) => entity.type === 'url' || entity.type === 'text_link');
+  if (!hasLink) return;
+  const sites = ['Instagram', 'Facebook', ...(mayUseReddit(ctx.from?.id) ? ['Reddit'] : []), 'Snapchat', 'X (Twitter)', 'Threads'];
+  return ctx.reply(
+    `Sorry, I can’t download from that link. I support ${sites.slice(0, -1).join(', ')} and ${sites.at(-1)}.\n` +
+      'Send /help to see what works for each.',
+    { reply_parameters: { message_id: ctx.message.message_id }, link_preview_options: { is_disabled: true } },
+  );
+}
+
 bot.on('message:text', (ctx) => {
   const text = ctx.message.text;
   const link = parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text) ?? parseThreadsLink(text);
-  if (!link) return; // plain text without a supported link: ignore it
+  if (!link) return replyUnsupportedSite(ctx); // no supported link: say so for other sites' links (private chats only)
   if ((link.site === 'reddit' || (link.key && isReddit(link.key))) && !mayUseReddit(ctx.from?.id)) {
     return ctx.reply(REDDIT_OWNER_ONLY, { reply_parameters: { message_id: ctx.message.message_id } });
   }
@@ -851,10 +1296,11 @@ async function deliver(ctx, key, media) {
   // One reel or photo: caption and button on the same message, like Instagram shows it.
   if (single && sendable.length === 1 && !media.partial && !media.hidden) {
     const message = await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
+    rememberPost(message, key);
     return { complete, sent: [message.message_id] };
   }
 
-  const sent = await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' });
+  const sent = await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' }, {}, key);
 
   const notes = tooBig.map(
     (item) =>
@@ -989,6 +1435,10 @@ try {
     { command: 'start', description: 'How to use this bot' },
     { command: 'help', description: 'What I can download, and the limits' },
     { command: 'clip', description: 'Reply to a video: /clip 0:05-0:15 cuts that part' },
+    { command: 'frame', description: 'Reply to a video: /frame 0:12 gives the picture at that moment' },
+    { command: 'file', description: 'Reply to a photo/video/album I sent: the originals as files' },
+    { command: 'sticker', description: 'Reply to a photo: turns it into a sticker' },
+    { command: 'pdf', description: 'Reply to a photo or album: one PDF of its photos' },
     { command: 'chatid', description: 'Show this chat’s (and topic’s) ID — owner only' },
   ]);
 } catch (err) {
