@@ -1,0 +1,42 @@
+{
+  "src/bot.js": {
+    "hash": "f5adf351347283add2d7d46b45f9e789",
+    "lines": 1531
+  },
+  "src/facebook.js": {
+    "hash": "e696da1292f2d2f4bcaaf611a1c5717e",
+    "lines": 329
+  },
+  "src/frames.js": {
+    "hash": "19e59bb00c8fb8dd8b823751d5b86b2a",
+    "lines": 346
+  },
+  "src/instagram.js": {
+    "hash": "aefb3c9578f9936382402bcf724a585a",
+    "lines": 437
+  },
+  "src/pdf.js": {
+    "hash": "7bc1c1f596966be67b8bfdb3cd355aae",
+    "lines": 101
+  },
+  "src/reddit.js": {
+    "hash": "769d6e57c0fcc64f01aca05711476faf",
+    "lines": 319
+  },
+  "src/snapchat.js": {
+    "hash": "a987dd3a5f46d66fab3391808d9b6747",
+    "lines": 284
+  },
+  "src/threads.js": {
+    "hash": "61dfad56a747dafc0c2f7aac665785bf",
+    "lines": 254
+  },
+  "src/x.js": {
+    "hash": "9bb64b17ef3d5ce5daa1b36a7777d7d5",
+    "lines": 182
+  },
+  "yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py": {
+    "hash": "b2dc4911ddaf5c51a70afb977f34aac2",
+    "lines": 114
+  }
+}

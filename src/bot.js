@@ -16,6 +16,8 @@ import { cutClip, dropRepeats, ensureH264, extractFrames, ffmpegMode, grabFrameA
 import { buildPdf, embeddable, jpegInfo } from './pdf.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
+// ---------- config and access ----------
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
   console.error('BOT_TOKEN is missing. Copy .env.example to .env and paste the token from @BotFather.');
@@ -390,6 +392,8 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}, 
   }
   return ids;
 }
+
+// ---------- error messages ----------
 
 function describeError(err, key) {
   const detail = `${err?.stderr ?? ''} ${err?.message ?? ''}`;
@@ -1130,6 +1134,8 @@ bot.on('message:document', (ctx) => {
   takeForPdf(ctx);
 });
 
+// ---------- re-sending media ----------
+
 // Photos and videos sent or forwarded to the bot come back without captions or "Forwarded
 // from" headers. Several sent together (e.g. 3 forwarded at once) are collected for a moment
 // and returned as albums of up to 10, then the originals are deleted. Telegram reuses the
@@ -1186,6 +1192,8 @@ async function resendMedia(chatId, topic, items) {
     await bot.api.sendMessage(chatId, `❌ ${describeError(err)}`, topic).catch(() => {});
   }
 }
+
+// ---------- links → downloads ----------
 
 /**
  * A message with a link the bot doesn't support gets a short general reply listing what does
@@ -1351,6 +1359,8 @@ async function archiveCopy(ctx, key, messageIds) {
     console.error(`[${key}] archive copy failed:`, err?.description ?? err);
   }
 }
+
+// ---------- screenshot buttons ----------
 
 bot.callbackQuery(SCREENSHOT_DATA, async (ctx) => {
   const count = ctx.match[1] === '1' ? 1 : SCREENSHOT_COUNT;
