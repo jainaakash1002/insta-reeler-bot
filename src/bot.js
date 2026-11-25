@@ -44,6 +44,7 @@ const ARCHIVE_TOPIC_ID = Number(process.env.ARCHIVE_TOPIC_ID) || undefined;
 // itself) need the topic's id, or they land in General.
 const topicOf = (msg) => (msg?.is_topic_message ? { message_thread_id: msg.message_thread_id } : {});
 const mayUseReddit = isOwner;
+const OWNER_ONLY = 'This command is only for the bot’s owner.';
 const REDDIT_OWNER_ONLY = 'Reddit downloads are only available to the bot’s owner.';
 // Screenshot buttons can be limited the same way: SCREENSHOT_USER_IDS, or OWNER_USER_IDS when
 // it isn't set ("all" or both empty: everyone). Others get no buttons, and a tap on someone else's is refused.
@@ -565,7 +566,7 @@ bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { pars
 
 // /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (OWNER_USER_IDS).
 bot.command('chatid', (ctx) => {
-  if (!isOwner(ctx.from?.id)) return;
+  if (!isOwner(ctx.from?.id)) return ctx.reply(OWNER_ONLY, { reply_parameters: { message_id: ctx.msg.message_id } });
   const topic = topicOf(ctx.msg).message_thread_id;
   return ctx.reply(
     `This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})` +
@@ -640,7 +641,7 @@ async function downloadFromTelegram(fileId, file) {
 
 bot.command('clip', async (ctx) => {
   const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
-  if (!mayScreenshot(ctx.from?.id)) return ctx.reply(SCREENSHOTS_OWNER_ONLY, replyOptions);
+  if (!mayScreenshot(ctx.from?.id)) return ctx.reply('Clips are only for the bot’s owner.', replyOptions);
   const target = ctx.msg.reply_to_message;
   const video = videoIn(target);
   if (!video) return ctx.reply(CLIP_USAGE, { ...replyOptions, parse_mode: 'HTML' });
@@ -983,7 +984,13 @@ await pruneCache();
 setInterval(() => pruneCache().catch(console.error), 10 * 60 * 1000).unref();
 
 try {
-  await bot.api.setMyCommands([{ command: 'start', description: 'How to use this bot' }]);
+  // The "/" menu. Everyone sees every command; owner-only ones answer others with OWNER_ONLY.
+  await bot.api.setMyCommands([
+    { command: 'start', description: 'How to use this bot' },
+    { command: 'help', description: 'What I can download, and the limits' },
+    { command: 'clip', description: 'Reply to a video: /clip 0:05-0:15 cuts that part' },
+    { command: 'chatid', description: 'Show this chat’s (and topic’s) ID — owner only' },
+  ]);
 } catch (err) {
   if (err?.error_code === 401 || err?.error_code === 404) {
     console.error('Telegram rejected BOT_TOKEN. Copy the token from @BotFather again into .env.');

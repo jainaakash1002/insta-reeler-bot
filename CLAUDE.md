@@ -166,9 +166,11 @@ Videos in stories and highlights (`needsLogin(key)`) get two buttons: **1 screen
 
 **Handlers are fire-and-forget on purpose.** `sendMedia` and `sendScreenshots` are started without `await`, so grammY's sequential update processing isn't blocked by a long download. Each one catches its own errors and reports them in the chat through `describeError(err, key)`.
 
-**Archive copy.** With `ARCHIVE_CHAT_ID` set, `sendMedia` passes the ids of the media messages `deliver` sent (`{ complete, sent }`) to `archiveCopy`, which posts a header (user name, @username, id, site) to that chat and then `copyMessages` (no re-upload). Users in `OWNER_USER_IDS` and links sent inside the archive chat itself aren't copied; screenshots and re-sent media aren't either. Failures are only logged. `ARCHIVE_TOPIC_ID` picks the topic in a group with topics (else General). `/chatid` (owner only, `isOwner`) replies with the chat's id, and the topic's id when sent inside a topic; in a group with privacy mode it must be sent as `/chatid@<bot username>`.
+**Archive copy.** With `ARCHIVE_CHAT_ID` set, `sendMedia` passes the ids of the media messages `deliver` sent (`{ complete, sent }`) to `archiveCopy`, which posts a header (user name, @username, id, site) to that chat and then `copyMessages` (no re-upload). Users in `OWNER_USER_IDS` and links sent inside the archive chat itself aren't copied; screenshots and re-sent media aren't either. Failures are only logged. `ARCHIVE_TOPIC_ID` picks the topic in a group with topics (else General). `/chatid` (owner only, `isOwner`; others get `OWNER_ONLY`) replies with the chat's id, and the topic's id when sent inside a topic; in a group with privacy mode it must be sent as `/chatid@<bot username>`.
 
 **Groups with topics.** `ctx.reply*` keeps a reply in the sender's topic by itself, but `bot.api`/`ctx.api` calls don't: they need `topicOf(msg)` (`message_thread_id`), or the message lands in General. The loader and `resendMedia` (which collects per chat *and* topic) pass it.
+
+**Command menu.** `setMyCommands` at startup lists `start`, `help`, `clip` and `chatid` for everyone; owner-only commands answer others with an error instead of being hidden. Keep it in step when adding a command.
 
 **Rate limiting.** A grammY API transformer retries any call that gets a 429 response, waiting `retry_after` each time, up to 3 attempts. Sending many albums of stories in a row triggers this.
 
