@@ -21,5 +21,6 @@
   "src/snapchat.js#snapchat.js": "Snapchat",
   "src/threads.js#threads.js": "Threads",
   "src/x.js#x.js": "X (Twitter)",
-  "yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py#instagram_photos.py": "yt-dlp Instagram Plugin"
+  "yt-dlp-plugins/instagram-photos/yt_dlp_plugins/extractor/instagram_photos.py#instagram_photos.py": "yt-dlp Instagram Plugin",
+  "src/bot.js#/stats": "/stats (Bandwidth & Activity)"
 }

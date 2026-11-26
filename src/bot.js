@@ -1277,6 +1277,7 @@ async function sendMedia(ctx, link) {
     // Everything arrived, so the user's link message has done its job. After an error, or if
     // some items couldn't be sent, it stays so the user can see what they asked for.
     if (complete) await ctx.deleteMessage().catch(() => {});
+    countDownload(key, ctx.from?.id);
     console.log(`[${key}] sent ${media.items.length} item(s) to chat ${ctx.chat.id}${complete ? '' : ' (incomplete)'}`);
   } catch (err) {
     console.error(`[${key ?? link.share}]`, err?.stderr || err);
@@ -1433,6 +1434,164 @@ async function sendScreenshots(ctx, key, n, count) {
 
 bot.catch((err) => console.error('Bot error:', err.error ?? err));
 
+// ---------- /stats ----------
+// Owner only. Render's outbound bandwidth (the free plan's 5 GB/month limit) from Render's
+// metrics API, the same hourly numbers as the dashboard's "Outbound Bandwidth" chart, plus what
+// the bot did since it last started (lost when the free instance sleeps). Needs RENDER_API_KEY;
+// Render sets RENDER_SERVICE_ID itself.
+const RENDER_API_KEY = process.env.RENDER_API_KEY?.trim();
+const RENDER_SERVICE_ID = process.env.RENDER_SERVICE_ID?.trim();
+const BANDWIDTH_LIMIT_GB = Number(process.env.BANDWIDTH_LIMIT_GB) || 5;
+const STATS_TIMEZONE = process.env.STATS_TIMEZONE?.trim() || 'UTC';
+const sinceStart = { at: Date.now(), bySite: new Map(), users: new Set() };
+
+/** Counts a delivered download for /stats. */
+function countDownload(key, userId) {
+  const site = siteName(key);
+  sinceStart.bySite.set(site, (sinceStart.bySite.get(site) ?? 0) + 1);
+  if (userId) sinceStart.users.add(userId);
+}
+
+/** Hourly outbound MB by traffic source ("total", "nat" = the bot's own requests, "http" = answers) since `start`. */
+async function renderBandwidth(start) {
+  const url = new URL('https://api.render.com/v1/metrics/bandwidth-sources');
+  url.searchParams.set('resource', RENDER_SERVICE_ID);
+  url.searchParams.set('startTime', start.toISOString());
+  url.searchParams.set('endTime', new Date().toISOString());
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${RENDER_API_KEY}` }, signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`Render metrics API: HTTP ${res.status}`);
+  const series = {};
+  for (const s of await res.json()) {
+    const source = s.labels?.find((label) => label.field === 'trafficSource')?.value;
+    if (source) series[source] = (s.values ?? []).map((v) => ({ at: new Date(v.timestamp), mb: Number(v.value) || 0 }));
+  }
+  return series;
+}
+
+const formatMb = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`);
+const bar = (fraction, width) => {
+  const filled = Math.round(Math.max(0, Math.min(1, fraction)) * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+};
+const dayKey = (date) => date.toLocaleDateString('en-CA', { timeZone: STATS_TIMEZONE }); // YYYY-MM-DD
+const dayLabel = (date) => date.toLocaleDateString('en-GB', { timeZone: STATS_TIMEZONE, day: '2-digit', month: 'short' });
+
+async function bandwidthLines() {
+  if (!RENDER_API_KEY || !RENDER_SERVICE_ID) {
+    return ['Bandwidth: set <code>RENDER_API_KEY</code> on Render to see it here.'];
+  }
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)); // Render bills by calendar month (UTC)
+  const series = await renderBandwidth(monthStart);
+  const total = series.total ?? [];
+  const sum = (points) => points.reduce((acc, p) => acc + p.mb, 0);
+  const used = sum(total);
+  const limit = BANDWIDTH_LIMIT_GB * 1024;
+  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  // Projection: the last 7 days' daily average for the rest of the month (the whole month's
+  // average would be too low for a month the service started partway through).
+  const weekAgo = new Date(now - 7 * 86_400_000);
+  const lastWeek = sum(total.filter((p) => p.at >= weekAgo));
+  const firstPoint = total[0]?.at ?? now;
+  const weekDays = Math.max(1 / 24, (now - Math.max(weekAgo, firstPoint)) / 86_400_000);
+  const remainingDays = (new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), daysInMonth + 1)) - now) / 86_400_000;
+  const projected = used + (lastWeek / weekDays) * remainingDays;
+
+  // The last 7 days, by day in STATS_TIMEZONE.
+  const perDay = new Map();
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(now - i * 86_400_000);
+    perDay.set(dayKey(day), { label: dayLabel(day), mb: 0 });
+  }
+  for (const p of total) {
+    const slot = perDay.get(dayKey(p.at));
+    if (slot) slot.mb += p.mb;
+  }
+  const busiest = Math.max(1, ...[...perDay.values()].map((d) => d.mb));
+  const peak = total.reduce((best, p) => (p.mb > (best?.mb ?? 0) ? p : best), null);
+
+  const lines = [
+    `📶 <b>Bandwidth this month</b> (Render, outbound)`,
+    `<code>${bar(used / limit, 20)}</code> ${formatMb(used)} of ${BANDWIDTH_LIMIT_GB} GB (${Math.round((used / limit) * 100)}%)`,
+    `Telegram uploads and downloads: ${formatMb(sum(series.nat ?? []))} · webhook answers: ${formatMb(sum(series.http ?? []))}`,
+    `At last week’s rate (${formatMb(lastWeek / weekDays)}/day): ~${formatMb(projected)} by the end of the month${projected > limit ? ' ⚠️ over the limit' : ''}`,
+    '',
+    `<b>Last 7 days</b> (${escapeHtml(STATS_TIMEZONE)})`,
+    `<pre>${[...perDay.values()].map((d) => `${d.label}  ${bar(d.mb / busiest, 12)} ${formatMb(d.mb).padStart(7)}`).join('\n')}</pre>`,
+  ];
+  if (peak) {
+    const when = peak.at.toLocaleString('en-GB', { timeZone: STATS_TIMEZONE, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    lines.push(`Busiest hour this month: ${formatMb(peak.mb)} at ${when}`);
+  }
+  return lines;
+}
+
+/** Reads a cgroup v2 file of this container; undefined outside Linux containers (e.g. on a Mac). */
+const cgroup = (name) => fs.readFile(`/sys/fs/cgroup/${name}`, 'utf8').then((text) => text.trim(), () => undefined);
+
+/**
+ * Memory and CPU of this container right now (cgroup v2, as on Render), else of the Node process.
+ * Since the container started, so a sleep or deploy resets them.
+ */
+async function resourceLines() {
+  const mb = (bytes) => Number(bytes) / 1024 / 1024;
+  const [current, peak, max, cpuStat, cpuMax] = await Promise.all(
+    ['memory.current', 'memory.peak', 'memory.max', 'cpu.stat', 'cpu.max'].map(cgroup),
+  );
+  const used = current ? mb(current) : mb(process.memoryUsage().rss);
+  const limit = max && max !== 'max' ? mb(max) : os.totalmem() / 1024 / 1024;
+  const lines = [`🧠 <b>Memory</b>: <code>${bar(used / limit, 10)}</code> ${formatMb(used)} of ${formatMb(limit)}${peak ? ` · peak ${formatMb(mb(peak))}` : ''}`];
+  // CPU: time used since start / wall time, as a share of the CPUs this container may use.
+  const usageUsec = Number(cpuStat?.match(/usage_usec (\d+)/)?.[1]);
+  const [quota, period] = (cpuMax ?? '').split(' ');
+  const cpus = quota && quota !== 'max' ? Number(quota) / Number(period) : os.cpus().length;
+  const cpuSeconds = usageUsec ? usageUsec / 1e6 : (process.cpuUsage().user + process.cpuUsage().system) / 1e6;
+  const share = cpuSeconds / process.uptime() / cpus;
+  lines.push(`⚙️ <b>CPU</b>: ${Math.round(share * 100)}% of ${cpus < 1 ? cpus.toFixed(1) : cpus} CPU on average since start`);
+  return lines;
+}
+
+async function cacheSize() {
+  let bytes = 0;
+  let posts = 0;
+  for (const entry of await fs.readdir(CACHE_DIR, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    posts++;
+    for (const file of await fs.readdir(path.join(CACHE_DIR, entry.name)).catch(() => [])) {
+      bytes += (await fs.stat(path.join(CACHE_DIR, entry.name, file)).catch(() => ({ size: 0 }))).size;
+    }
+  }
+  return { posts, mb: bytes / 1024 / 1024 };
+}
+
+bot.command('stats', async (ctx) => {
+  if (!isOwner(ctx.from?.id)) return ctx.reply(OWNER_ONLY, { reply_parameters: { message_id: ctx.msg.message_id } });
+  await ctx.replyWithChatAction('typing').catch(() => {});
+  let bandwidth;
+  try {
+    bandwidth = await bandwidthLines();
+  } catch (err) {
+    console.error('[stats]', err?.message ?? err);
+    bandwidth = ['📶 Bandwidth: Render’s metrics API didn’t answer. Try again in a bit.'];
+  }
+  const uptimeMin = Math.round((Date.now() - sinceStart.at) / 60_000);
+  const uptime = uptimeMin >= 60 ? `${Math.floor(uptimeMin / 60)} h ${uptimeMin % 60} min` : `${uptimeMin} min`;
+  const total = [...sinceStart.bySite.values()].reduce((a, b) => a + b, 0);
+  const bySite = [...sinceStart.bySite].sort((a, b) => b[1] - a[1]).map(([site, n]) => `${escapeHtml(site)} ${n}`).join(' · ');
+  const cache = await cacheSize();
+  const resources = await resourceLines().catch(() => []);
+  const text = [
+    ...bandwidth,
+    '',
+    ...resources,
+    '',
+    `🤖 <b>Since the bot started</b> (${uptime} ago; the free plan sleeps after 15 idle minutes)`,
+    `Downloads sent: ${total}${bySite ? ` (${bySite})` : ''} · people: ${sinceStart.users.size}`,
+    `Cache: ${cache.posts} post${cache.posts === 1 ? '' : 's'}, ${formatMb(cache.mb)} (kept 1 hour)`,
+  ].join('\n');
+  return ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+});
+
 // ---------- start ----------
 
 await fs.mkdir(CACHE_DIR, { recursive: true });
@@ -1449,6 +1608,7 @@ try {
     { command: 'file', description: 'Reply to a photo/video/album I sent: the originals as files' },
     { command: 'sticker', description: 'Reply to a photo: turns it into a sticker' },
     { command: 'pdf', description: 'Reply to a photo or album: one PDF of its photos' },
+    { command: 'stats', description: 'Bandwidth used this month and bot activity — owner only' },
     { command: 'chatid', description: 'Show this chat’s (and topic’s) ID — owner only' },
   ]);
 } catch (err) {

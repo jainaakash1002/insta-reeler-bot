@@ -1,10 +1,10 @@
 # Graph Report - src + yt-dlp-plugins
 
 ## Corpus Check
-- Corpus: 10 files · ~23,395 words. AST-free extraction, no token cost.
+- Corpus: 10 files · ~24,504 words. AST-free extraction, no token cost.
 
 ## Summary
-- 352 nodes · 964 edges · 23 communities detected
+- 368 nodes · 1010 edges · 24 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 0 edges (avg confidence: 0)
 - Token cost: 0 input · 0 output
 
@@ -22,6 +22,7 @@
 - [[_COMMUNITY_Re-sending Photos & Videos|Re-sending Photos & Videos]]
 - [[_COMMUNITY_Links to Downloads (Request Flow)|Links to Downloads (Request Flow)]]
 - [[_COMMUNITY_Screenshot Buttons|Screenshot Buttons]]
+- [[_COMMUNITY_stats (Bandwidth & Activity)|/stats (Bandwidth & Activity)]]
 - [[_COMMUNITY_Startup & Webhook Server|Startup & Webhook Server]]
 - [[_COMMUNITY_Facebook|Facebook]]
 - [[_COMMUNITY_ffmpeg (Frames Clips Stickers)|ffmpeg (Frames, Clips, Stickers)]]
@@ -34,21 +35,21 @@
 - [[_COMMUNITY_yt-dlp Instagram Plugin|yt-dlp Instagram Plugin]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `bot` - 22 edges  (src/bot.js:L75)
+1. `bot` - 23 edges  (src/bot.js:L75)
 2. `parseFacebookLink()` - 20 edges  (src/facebook.js:L270)
 3. `describeError()` - 18 edges  (src/bot.js:L398)
-4. `bot.on('message:text')` - 15 edges  (src/bot.js:L1215)
-5. `sendMedia()` - 15 edges  (src/bot.js:L1254)
+4. `sendMedia()` - 16 edges  (src/bot.js:L1254)
+5. `bot.on('message:text')` - 15 edges  (src/bot.js:L1215)
 6. `makePdf()` - 14 edges  (src/bot.js:L1090)
 7. `parseSnapchatLink()` - 13 edges  (src/snapchat.js:L219)
-8. `buildCaption()` - 12 edges  (src/bot.js:L247)
-9. `deliver()` - 12 edges  (src/bot.js:L1292)
-10. `postOfMessage()` - 12 edges  (src/bot.js:L659)
-11. `videoSource()` - 12 edges  (src/bot.js:L687)
-12. `parseRedditLink()` - 12 edges  (src/reddit.js:L252)
+8. `bandwidthLines()` - 12 edges  (src/bot.js:L1479)
+9. `buildCaption()` - 12 edges  (src/bot.js:L247)
+10. `deliver()` - 12 edges  (src/bot.js:L1293)
+11. `postOfMessage()` - 12 edges  (src/bot.js:L659)
+12. `videoSource()` - 12 edges  (src/bot.js:L687)
 
 ## Hub Files (most connected modules)
-1. `src/bot.js` - 797 edges
+1. `src/bot.js` - 889 edges
 2. `src/facebook.js` - 170 edges
 3. `src/frames.js` - 170 edges
 4. `src/instagram.js` - 160 edges
@@ -71,10 +72,11 @@
 - `bot.on('message:document')` (L1133) -> `takeForPdf()`
 - `bot.on(['message:photo', 'message:video'])` (L1146) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
 - `bot.on('message:text')` (L1215) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
-- `bot.callbackQuery(SCREENSHOT_DATA)` (L1365) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
-- `bot.callbackQuery(DISMISS_DATA)` (L1380) -> `mayScreenshot()`
-- `bot.on('callback_query:data')` (L1388) -> (inline)
-- `bot.catch()` (L1434) -> (inline)
+- `bot.callbackQuery(SCREENSHOT_DATA)` (L1366) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
+- `bot.callbackQuery(DISMISS_DATA)` (L1381) -> `mayScreenshot()`
+- `bot.on('callback_query:data')` (L1389) -> (inline)
+- `bot.catch()` (L1435) -> (inline)
+- `bot.command('stats')` (L1567) -> `bandwidthLines()`, `cacheSize()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
 
 ## External Dependencies (most imported)
 - `node:fs` - 6 import sites
@@ -125,7 +127,7 @@ Nodes (4): getMedia(), loadOrDownload(), pruneCache(), inFlight
 
 ### Community 2 - "Captions, Loader & Album Sending"
 Cohesion: 0.08
-Nodes (22): buildCaption(), startLoader(), siteOf(), isReddit(), sendAlbums(), screenshotKeyboard(), siteName(), DISMISS_DATA (+14 more)
+Nodes (22): buildCaption(), startLoader(), siteOf(), isReddit(), sendAlbums(), screenshotKeyboard(), siteName(), escapeHtml() (+14 more)
 
 ### Community 3 - "Error Messages"
 Cohesion: 0.0
@@ -161,48 +163,52 @@ Nodes (4): bot.on(['message:photo', 'message:video']), resendMedia(), COLLECT_MS
 
 ### Community 11 - "Links to Downloads (Request Flow)"
 Cohesion: 0.4
-Nodes (5): bot.on('message:text'), sendMedia(), deliver(), archiveCopy(), replyUnsupportedSite()
+Nodes (5): sendMedia(), bot.on('message:text'), deliver(), archiveCopy(), replyUnsupportedSite()
 
 ### Community 12 - "Screenshot Buttons"
 Cohesion: 0.1
 Nodes (5): bot.callbackQuery(SCREENSHOT_DATA), sendScreenshots(), bot.callbackQuery(DISMISS_DATA), bot.catch(), bot.on('callback_query:data')
 
-### Community 13 - "Startup & Webhook Server"
+### Community 13 - "/stats (Bandwidth & Activity)"
+Cohesion: 0.18
+Nodes (16): bandwidthLines(), bot.command('stats'), resourceLines(), countDownload(), formatMb(), renderBandwidth(), STATS_TIMEZONE, bar() (+8 more)
+
+### Community 14 - "Startup & Webhook Server"
 Cohesion: 0.33
 Nodes (3): logStarted(), startWebhook(), WEBHOOK_URL
 
-### Community 14 - "Facebook"
+### Community 15 - "Facebook"
 Cohesion: 0.12
 Nodes (37): facebook.js, parseFacebookLink(), downloadImage(), readFacebookPhoto(), readFacebookPost(), digits(), fetchPage(), postKeyFromPage() (+29 more)
 
-### Community 15 - "ffmpeg (Frames, Clips, Stickers)"
+### Community 16 - "ffmpeg (Frames, Clips, Stickers)"
 Cohesion: 0.14
 Nodes (33): frames.js, run, FFMPEG, makeSticker(), cutClip(), dropRepeats(), ensureH264(), ffmpegMode (+25 more)
 
-### Community 16 - "Instagram, Keys & yt-dlp"
+### Community 17 - "Instagram, Keys & yt-dlp"
 Cohesion: 0.15
 Nodes (28): instagram.js, downloadMedia(), requestFor(), runYtdlp(), parseInstagramLink(), needsLogin(), downloadPostItems(), downloadFacebookPhoto() (+20 more)
 
-### Community 17 - "PDF Writer"
+### Community 18 - "PDF Writer"
 Cohesion: 0.6
 Nodes (6): buildPdf(), pdf.js, embeddable(), jpegInfo(), A4, MARGIN
 
-### Community 18 - "Reddit"
+### Community 19 - "Reddit"
 Cohesion: 0.17
 Nodes (30): reddit.js, parseRedditLink(), downloadRedditFile(), getJson(), accessToken(), resolveRedditShareLink(), postItems(), readRedditPost() (+22 more)
 
-### Community 19 - "Snapchat"
+### Community 20 - "Snapchat"
 Cohesion: 0.15
 Nodes (30): snapchat.js, parseSnapchatLink(), readSnapchat(), spotlightFromProfile(), downloadFile(), downloadSnapchat(), fetchPage(), resolveSnapchatShareLink() (+22 more)
 
-### Community 20 - "Threads"
+### Community 21 - "Threads"
 Cohesion: 0.19
 Nodes (25): threads.js, queryPost(), downloadThreadsPost(), parseThreadsLink(), downloadFile(), threadsError(), BROWSER_UA, pickUrl() (+17 more)
 
-### Community 21 - "X (Twitter)"
+### Community 22 - "X (Twitter)"
 Cohesion: 0.2
 Nodes (22): x.js, parseXLink(), downloadXPost(), downloadFile(), fetchPost(), pickUrl(), readPost(), resolveXShareLink() (+14 more)
 
-### Community 22 - "yt-dlp Instagram Plugin"
+### Community 23 - "yt-dlp Instagram Plugin"
 Cohesion: 0.33
 Nodes (9): instagram_photos.py, _add_photo_format(), _embedded_reels(), _InstagramStoryPhotosIE, _find_keys(), _InstagramPhotosIE, json, re (+1 more)
