@@ -19,10 +19,10 @@
 - [[_COMMUNITY_file|/file]]
 - [[_COMMUNITY_sticker & Sticker Packs|/sticker & Sticker Packs]]
 - [[_COMMUNITY_pdf (Photos to PDF)|/pdf (Photos to PDF)]]
+- [[_COMMUNITY_stats (Bandwidth & Activity)|/stats (Bandwidth & Activity)]]
 - [[_COMMUNITY_Re-sending Photos & Videos|Re-sending Photos & Videos]]
 - [[_COMMUNITY_Links to Downloads (Request Flow)|Links to Downloads (Request Flow)]]
 - [[_COMMUNITY_Screenshot Buttons|Screenshot Buttons]]
-- [[_COMMUNITY_stats (Bandwidth & Activity)|/stats (Bandwidth & Activity)]]
 - [[_COMMUNITY_Startup & Webhook Server|Startup & Webhook Server]]
 - [[_COMMUNITY_Facebook|Facebook]]
 - [[_COMMUNITY_ffmpeg (Frames Clips Stickers)|ffmpeg (Frames, Clips, Stickers)]]
@@ -38,13 +38,13 @@
 1. `bot` - 23 edges  (src/bot.js:L75)
 2. `parseFacebookLink()` - 20 edges  (src/facebook.js:L270)
 3. `describeError()` - 18 edges  (src/bot.js:L398)
-4. `sendMedia()` - 16 edges  (src/bot.js:L1254)
-5. `bot.on('message:text')` - 15 edges  (src/bot.js:L1215)
+4. `sendMedia()` - 16 edges  (src/bot.js:L1412)
+5. `bot.on('message:text')` - 15 edges  (src/bot.js:L1373)
 6. `makePdf()` - 14 edges  (src/bot.js:L1090)
 7. `parseSnapchatLink()` - 13 edges  (src/snapchat.js:L219)
-8. `bandwidthLines()` - 12 edges  (src/bot.js:L1479)
+8. `bandwidthLines()` - 12 edges  (src/bot.js:L1179)
 9. `buildCaption()` - 12 edges  (src/bot.js:L247)
-10. `deliver()` - 12 edges  (src/bot.js:L1293)
+10. `deliver()` - 12 edges  (src/bot.js:L1451)
 11. `postOfMessage()` - 12 edges  (src/bot.js:L659)
 12. `videoSource()` - 12 edges  (src/bot.js:L687)
 
@@ -70,13 +70,13 @@
 - `bot.callbackQuery(STICKER_PACK_DATA)` (L958) -> `packName()`
 - `bot.command('pdf')` (L1031) -> `makePdf()`, `pdfFileName()`, `pdfPageOf()`, `schedulePdfAlbum()`
 - `bot.on('message:document')` (L1133) -> `takeForPdf()`
-- `bot.on(['message:photo', 'message:video'])` (L1146) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
-- `bot.on('message:text')` (L1215) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
-- `bot.callbackQuery(SCREENSHOT_DATA)` (L1366) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
-- `bot.callbackQuery(DISMISS_DATA)` (L1381) -> `mayScreenshot()`
-- `bot.on('callback_query:data')` (L1389) -> (inline)
-- `bot.catch()` (L1435) -> (inline)
-- `bot.command('stats')` (L1567) -> `bandwidthLines()`, `cacheSize()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
+- `bot.command('stats')` (L1267) -> `bandwidthLines()`, `cacheSize()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
+- `bot.on(['message:photo', 'message:video'])` (L1304) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
+- `bot.on('message:text')` (L1373) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
+- `bot.callbackQuery(SCREENSHOT_DATA)` (L1524) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
+- `bot.callbackQuery(DISMISS_DATA)` (L1539) -> `mayScreenshot()`
+- `bot.on('callback_query:data')` (L1547) -> (inline)
+- `bot.catch()` (L1593) -> (inline)
 
 ## External Dependencies (most imported)
 - `node:fs` - 6 import sites
@@ -157,21 +157,21 @@ Nodes (9): bot.command('sticker'), sendSticker(), bot.callbackQuery(STICKER_PACK
 Cohesion: 0.19
 Nodes (14): makePdf(), bot.command('pdf'), rememberAlbum(), schedulePdfAlbum(), takeForPdf(), pdfPageOf(), pdfAlbums, bot.on('message:document') (+6 more)
 
-### Community 10 - "Re-sending Photos & Videos"
+### Community 10 - "/stats (Bandwidth & Activity)"
+Cohesion: 0.18
+Nodes (16): bandwidthLines(), bot.command('stats'), resourceLines(), countDownload(), formatMb(), renderBandwidth(), STATS_TIMEZONE, bar() (+8 more)
+
+### Community 11 - "Re-sending Photos & Videos"
 Cohesion: 0.5
 Nodes (4): bot.on(['message:photo', 'message:video']), resendMedia(), COLLECT_MS, pendingMedia
 
-### Community 11 - "Links to Downloads (Request Flow)"
+### Community 12 - "Links to Downloads (Request Flow)"
 Cohesion: 0.4
 Nodes (5): sendMedia(), bot.on('message:text'), deliver(), archiveCopy(), replyUnsupportedSite()
 
-### Community 12 - "Screenshot Buttons"
+### Community 13 - "Screenshot Buttons"
 Cohesion: 0.1
 Nodes (5): bot.callbackQuery(SCREENSHOT_DATA), sendScreenshots(), bot.callbackQuery(DISMISS_DATA), bot.catch(), bot.on('callback_query:data')
-
-### Community 13 - "/stats (Bandwidth & Activity)"
-Cohesion: 0.18
-Nodes (16): bandwidthLines(), bot.command('stats'), resourceLines(), countDownload(), formatMb(), renderBandwidth(), STATS_TIMEZONE, bar() (+8 more)
 
 ### Community 14 - "Startup & Webhook Server"
 Cohesion: 0.33
