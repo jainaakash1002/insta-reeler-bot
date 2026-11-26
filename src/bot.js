@@ -557,10 +557,10 @@ function helpText(userId) {
     '',
     '🛠 <b>Extras</b>',
     ...(mayScreenshot(userId)
-      ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`, '• ✂️ Reply to a video with /clip 0:05-0:15 to get just that part']
+      ? [`• “📸 Get ${SCREENSHOT_COUNT} screenshots” button under every video`, '• ✂️ Reply to a video with /clip 0:05-0:15 (or /c) to get just that part']
       : []),
     '• Send or forward me a photo or video: it comes back without caption or “Forwarded from”',
-    '• 🖼 Reply to a video with /frame 0:12 for the picture at that exact moment (several times work too; add “file” for full quality)',
+    '• 🖼 Reply to a video with /frame (or /f) for screenshots across it, or /frame 0:12 for the picture at that exact moment (several times work too; add “file” for full quality)',
     '• 📎 Reply to a photo, video or album I sent with /file to get the originals as files (full quality)',
     '• 📄 Reply to a photo or album with /pdf to get it as one PDF (A4 pages), or send an album with /pdf as its caption',
     '• 🎨 Reply to a photo with /sticker (or /sticker 😂) to make it a sticker, then ➕ to add it to your own pack',
@@ -707,7 +707,7 @@ async function videoSource(ctx, target, video, workDir) {
   return { source, found, caption };
 }
 
-bot.command('clip', async (ctx) => {
+bot.command(['clip', 'c'], async (ctx) => {
   const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
   if (!mayScreenshot(ctx.from?.id)) return ctx.reply('Clips are only for the bot’s owner.', replyOptions);
   const target = ctx.msg.reply_to_message;
@@ -765,10 +765,11 @@ async function sendClip(ctx, target, video, start, end) {
 const FRAME_MAX = 10;
 const FRAME_USAGE =
   'Reply to a video with <code>/frame 0:12</code> to get the picture at that moment.\n' +
-  `Several at once: <code>/frame 0:12 0:15 0:31</code> (up to ${FRAME_MAX}). Add <code>file</code> to get them uncompressed.`;
+  `Several at once: <code>/frame 0:12 0:15 0:31</code> (up to ${FRAME_MAX}). Add <code>file</code> to get them uncompressed.\n` +
+  `Just <code>/frame</code> gives ${SCREENSHOT_COUNT} pictures spread across the video.`;
 const FRAME_TIME = new RegExp(`^${TIME}$`);
 
-bot.command('frame', (ctx) => {
+bot.command(['frame', 'f'], (ctx) => {
   const replyOptions = { reply_parameters: { message_id: ctx.msg.message_id } };
   const target = ctx.msg.reply_to_message;
   const video = videoIn(target);
@@ -776,7 +777,8 @@ bot.command('frame', (ctx) => {
   const asFile = words.at(-1)?.toLowerCase() === 'file';
   if (asFile) words.pop();
   const times = words.map((word) => (FRAME_TIME.test(word) ? parseTime(word) : NaN));
-  if (!video || !times.length || times.some((time) => !(time >= 0))) {
+  // No times: SCREENSHOT_COUNT frames spread across the video, like the screenshot button.
+  if (!video || times.some((time) => !(time >= 0))) {
     return ctx.reply(FRAME_USAGE, { ...replyOptions, parse_mode: 'HTML' });
   }
   if (times.length > FRAME_MAX) return ctx.reply(`At most ${FRAME_MAX} times at once.`, replyOptions);
@@ -785,7 +787,8 @@ bot.command('frame', (ctx) => {
 
 async function sendFrames(ctx, target, video, times, asFile) {
   const replyOptions = { reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true } };
-  const loader = await startLoader(ctx, times.length === 1 ? `Grabbing ${formatTime(times[0])}…` : `Grabbing ${times.length} frames…`, {
+  const spread = times.length === 0;
+  const loader = await startLoader(ctx, spread ? `Taking ${SCREENSHOT_COUNT} screenshots…` : times.length === 1 ? `Grabbing ${formatTime(times[0])}…` : `Grabbing ${times.length} frames…`, {
     replyTo: target.message_id,
     action: asFile ? 'upload_document' : 'upload_photo',
   });
@@ -795,14 +798,14 @@ async function sendFrames(ctx, target, video, times, asFile) {
     const got = await videoSource(ctx, target, video, workDir);
     found = got.found;
     const length = await videoDuration(got.source);
-    const frames = [];
+    const frames = spread ? await dropRepeats(await extractFrames(got.source, workDir, SCREENSHOT_COUNT, length)) : [];
     for (const [i, time] of times.entries()) {
       if (!(time < length)) continue;
       const file = path.join(workDir, `frame-${String(i + 1).padStart(2, '0')}-${formatTime(time).replace(/[:.]/g, '_')}.jpg`);
       if (await grabFrameAt(got.source, file, time)) frames.push({ file, time });
     }
     if (!frames.length) throw clipError(`That video is only ${formatTime(length)} long.`);
-    const skipped = times.length - frames.length;
+    const skipped = spread ? 0 : times.length - frames.length;
 
     loader.set(frames.length === 1 ? 'Sending the frame…' : `Sending ${frames.length} frames…`);
     const header = `🖼 ${frames.map(({ time }) => formatTime(time)).join(', ')}` + (skipped ? ` (${skipped} past the end of the video)` : '');
@@ -1440,7 +1443,10 @@ async function sendMedia(ctx, link) {
   } catch (err) {
     console.error(`[${key ?? link.share}]`, err?.stderr || err);
     // The loader becomes the error (or the error is sent anew), so it never spins with no answer.
-    await loader.fail(`❌ ${describeError(err, key)}`);
+    const message = describeError(err, key);
+    await loader.fail(`❌ ${message}`);
+    const site = key ? siteName(key) : ({ facebook: 'Facebook', reddit: 'Reddit', snapchat: 'Snapchat', x: 'X', threads: 'Threads' })[link.site] ?? 'Instagram';
+    await alertFailure(ctx, site, key ?? link.share, err, message);
   }
 }
 
@@ -1516,6 +1522,49 @@ async function archiveCopy(ctx, key, messageIds) {
     await bot.api.copyMessages(ARCHIVE_CHAT_ID, ctx.chat.id, messageIds, topic);
   } catch (err) {
     console.error(`[${key}] archive copy failed:`, err?.description ?? err);
+  }
+}
+
+/*
+ * Failure alerts: when someone's download fails, a short note goes to the archive chat (same
+ * ARCHIVE_CHAT_ID/ARCHIVE_TOPIC_ID), so a site that broke (Threads' doc_id, X rate limits, a yt-dlp
+ * extractor) shows up before users complain. Not for owners (they see their own errors), nor for
+ * expected answers (deleted post, expired story, text post). At most one per site every
+ * ALERT_EVERY_MS; the next one says how many were held back.
+ */
+const ALERT_EVERY_MS = 10 * 60 * 1000;
+const EXPECTED_FAILURES = new Set([
+  'STORIES_PAUSED', 'NEEDS_LOGIN', 'NO_MEDIA', 'EXTERNAL_LINK', 'X_GONE', 'X_HIDDEN', 'THREADS_GONE',
+  'SNAP_GONE', 'NO_STORY', 'SPOTLIGHT_HIDDEN',
+]);
+const lastAlert = new Map(); // site → { at, held }
+
+async function alertFailure(ctx, site, keyOrLink, err, message) {
+  const user = ctx.from;
+  if (!ARCHIVE_CHAT_ID || !user || OWNER_USERS.has(user.id) || EXPECTED_FAILURES.has(err?.code)) return;
+  const isKey = !/^https?:/.test(keyOrLink ?? '');
+  const now = Date.now();
+  const last = lastAlert.get(site);
+  if (last && now - last.at < ALERT_EVERY_MS) {
+    last.held++;
+    return;
+  }
+  lastAlert.set(site, { at: now, held: 0 });
+  try {
+    const name = escapeHtml([user.first_name, user.last_name].filter(Boolean).join(' ') || 'Someone');
+    const detail = `${err?.code ? `${err.code}: ` : ''}${String(err?.stderr || err?.message || err).trim()}`.slice(-400);
+    const text = [
+      `⚠️ <b>Download failed</b> · ${escapeHtml(site)}`,
+      `${isKey ? 'Key' : 'Link'}: <code>${escapeHtml(keyOrLink ?? '?')}</code>`,
+      `User: <a href="tg://user?id=${user.id}">${name}</a>${user.username ? ` (@${escapeHtml(user.username)})` : ''} · <code>${user.id}</code>`,
+      `Told them: ${escapeHtml(message)}`,
+      `<pre>${escapeHtml(detail)}</pre>`,
+      last?.held ? `(+${last.held} more ${escapeHtml(site)} failure(s) in the last ${ALERT_EVERY_MS / 60000} minutes)` : '',
+    ].filter(Boolean).join('\n');
+    const topic = ARCHIVE_TOPIC_ID ? { message_thread_id: ARCHIVE_TOPIC_ID } : {};
+    await bot.api.sendMessage(ARCHIVE_CHAT_ID, text, { ...topic, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  } catch (alertErr) {
+    console.error('failure alert failed:', alertErr?.description ?? alertErr);
   }
 }
 
@@ -1603,8 +1652,8 @@ try {
   await bot.api.setMyCommands([
     { command: 'start', description: 'How to use this bot' },
     { command: 'help', description: 'What I can download, and the limits' },
-    { command: 'clip', description: 'Reply to a video: /clip 0:05-0:15 cuts that part' },
-    { command: 'frame', description: 'Reply to a video: /frame 0:12 gives the picture at that moment' },
+    { command: 'clip', description: 'Reply to a video: /clip (or /c) 0:05-0:15 cuts that part' },
+    { command: 'frame', description: 'Reply to a video: /frame (or /f) for screenshots, /frame 0:12 for one moment' },
     { command: 'file', description: 'Reply to a photo/video/album I sent: the originals as files' },
     { command: 'sticker', description: 'Reply to a photo: turns it into a sticker' },
     { command: 'pdf', description: 'Reply to a photo or album: one PDF of its photos' },

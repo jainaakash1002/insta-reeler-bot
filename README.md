@@ -24,9 +24,9 @@ A Telegram bot. Send it an Instagram link and it replies in the chat with what's
 
 Every video gets a **📸 Get N screenshots** button (N evenly spaced full-resolution frames as an album). Story and highlight videos also get **📸 1 screenshot** (one frame from the middle). Repeated frames are left out, so a "video" that is really a still picture, like a photo story with music, gives one screenshot. After **📸 1 screenshot** the message with the buttons is deleted; after the other button the buttons are removed.
 
-Reply to any video with **`/clip 0:05-0:15`** (or `5-15`, `1:05 1:20`) to get just that part, cut to the frame; at most 60 seconds. It works on videos the bot sent and on videos you send it (up to 20 MB, Telegram's download limit for bots). Same access as the screenshot buttons.
+Reply to any video with **`/clip 0:05-0:15`** (short: `/c 0:05-0:15`; also `5-15`, `1:05 1:20`) to get just that part, cut to the frame; at most 60 seconds. It works on videos the bot sent and on videos you send it (up to 20 MB, Telegram's download limit for bots). Same access as the screenshot buttons.
 
-Reply to a video with **`/frame 0:12`** to get the picture at that exact moment, or several at once (`/frame 0:12 0:15 0:31`, up to 10). Add `file` (`/frame 0:12 file`) to get them as files, uncompressed by Telegram. Open to everyone who may use the bot.
+Reply to a video with **`/frame 0:12`** (short: `/f 0:12`) to get the picture at that exact moment, or several at once (`/frame 0:12 0:15 0:31`, up to 10). Add `file` (`/frame 0:12 file`) to get them as files, uncompressed by Telegram. Just `/frame` (with no time) sends `SCREENSHOT_COUNT` screenshots spread across the video instead. Open to everyone who may use the bot.
 
 Reply to a photo, video or album the bot sent with **`/file`** to get the original files as documents, without Telegram's compression (`/file 3` for only item 3). Open to everyone who may use the bot.
 
@@ -92,7 +92,7 @@ Separate several IDs with commas. Restart the bot after changing `.env`.
 | `IG_COOKIES_FROM_BROWSER` | — | `chrome`, `firefox`, `brave`, `edge` or `safari`. Uses that browser's Instagram login. Needed for stories and highlights. |
 | `IG_COOKIES_FILE` | — | Path to a `cookies.txt` exported from a browser logged into Instagram. |
 | `OWNER_USER_IDS` | empty (everyone) | Comma-separated Telegram user IDs of the bot's owner(s). Only they may download Reddit links (they go through your Reddit account; others get *"Reddit downloads are only available to the bot's owner."*) and use `/chatid`, and their downloads aren't copied to `ARCHIVE_CHAT_ID`. Old name: `REDDIT_USER_IDS`, still read when this isn't set. |
-| `ARCHIVE_CHAT_ID` | empty (off) | A chat id (e.g. your private group: add the bot, send `/chatid@<bot username>` there) that gets a copy of everything other users download, after a line naming the user. Users in `OWNER_USER_IDS` aren't copied. |
+| `ARCHIVE_CHAT_ID` | empty (off) | A chat id (e.g. your private group: add the bot, send `/chatid@<bot username>` there) that gets a copy of everything other users download, after a line naming the user. Users in `OWNER_USER_IDS` aren’t copied. Failed downloads (other than deleted posts, expired stories and the like) are reported there too, as “⚠️ Download failed” with the error, at most once per site every 10 minutes. |
 | `ARCHIVE_TOPIC_ID` | empty (General) | If the archive group has topics: the topic the copies go to. Send `/chatid@<bot username>` inside that topic; it shows the topic's id too. |
 | `RENDER_API_KEY` | empty (off) | For **`/stats`** (owner only): this month's outbound bandwidth against Render's free 5 GB, the last 7 days and an end-of-month estimate, read from Render's metrics API. Render sets `RENDER_SERVICE_ID` itself. Optional: `BANDWIDTH_LIMIT_GB` (default 5), `STATS_TIMEZONE` (default UTC, e.g. `Asia/Kolkata`). |
 | `SCREENSHOT_USER_IDS` | same as `OWNER_USER_IDS` | Comma-separated Telegram user IDs who get the screenshot buttons. Others get none, and their taps on someone else's are refused. `all`: everyone, even when Reddit is limited. |

@@ -1,10 +1,10 @@
 # Graph Report - src + yt-dlp-plugins
 
 ## Corpus Check
-- Corpus: 10 files · ~24,504 words. AST-free extraction, no token cost.
+- Corpus: 10 files · ~24,870 words. AST-free extraction, no token cost.
 
 ## Summary
-- 368 nodes · 1010 edges · 24 communities detected
+- 372 nodes · 1027 edges · 24 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 0 edges (avg confidence: 0)
 - Token cost: 0 input · 0 output
 
@@ -35,23 +35,23 @@
 - [[_COMMUNITY_yt-dlp Instagram Plugin|yt-dlp Instagram Plugin]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `bot` - 23 edges  (src/bot.js:L75)
+1. `bot` - 24 edges  (src/bot.js:L75)
 2. `parseFacebookLink()` - 20 edges  (src/facebook.js:L270)
 3. `describeError()` - 18 edges  (src/bot.js:L398)
-4. `sendMedia()` - 16 edges  (src/bot.js:L1412)
-5. `bot.on('message:text')` - 15 edges  (src/bot.js:L1373)
-6. `makePdf()` - 14 edges  (src/bot.js:L1090)
-7. `parseSnapchatLink()` - 13 edges  (src/snapchat.js:L219)
-8. `bandwidthLines()` - 12 edges  (src/bot.js:L1179)
-9. `buildCaption()` - 12 edges  (src/bot.js:L247)
-10. `deliver()` - 12 edges  (src/bot.js:L1451)
-11. `postOfMessage()` - 12 edges  (src/bot.js:L659)
-12. `videoSource()` - 12 edges  (src/bot.js:L687)
+4. `sendMedia()` - 17 edges  (src/bot.js:L1415)
+5. `bot.on('message:text')` - 15 edges  (src/bot.js:L1376)
+6. `makePdf()` - 14 edges  (src/bot.js:L1093)
+7. `sendFrames()` - 13 edges  (src/bot.js:L788)
+8. `parseSnapchatLink()` - 13 edges  (src/snapchat.js:L219)
+9. `bandwidthLines()` - 12 edges  (src/bot.js:L1182)
+10. `buildCaption()` - 12 edges  (src/bot.js:L247)
+11. `deliver()` - 12 edges  (src/bot.js:L1457)
+12. `postOfMessage()` - 12 edges  (src/bot.js:L659)
 
 ## Hub Files (most connected modules)
-1. `src/bot.js` - 889 edges
-2. `src/facebook.js` - 170 edges
-3. `src/frames.js` - 170 edges
+1. `src/bot.js` - 921 edges
+2. `src/frames.js` - 172 edges
+3. `src/facebook.js` - 170 edges
 4. `src/instagram.js` - 160 edges
 5. `src/reddit.js` - 158 edges
 6. `src/snapchat.js` - 152 edges
@@ -63,20 +63,20 @@
 ## Telegram Handlers (entry points)
 - `bot.command(['start', 'help'])` (L577) -> `helpText()`
 - `bot.command('chatid')` (L580) -> `escapeHtml()`, `isOwner()`, `topicOf()`
-- `bot.command('clip')` (L710) -> `mayScreenshot()`, `parseTime()`, `sendClip()`, `videoIn()`
-- `bot.command('frame')` (L771) -> `parseTime()`, `sendFrames()`, `videoIn()`
-- `bot.command('file')` (L839) -> `isReddit()`, `mayUseReddit`, `postOfMessage()`, `sendFiles()`, `videoIn()`
-- `bot.command('sticker')` (L922) -> `imageIn()`, `sendSticker()`, `stickerEmoji()`
-- `bot.callbackQuery(STICKER_PACK_DATA)` (L958) -> `packName()`
-- `bot.command('pdf')` (L1031) -> `makePdf()`, `pdfFileName()`, `pdfPageOf()`, `schedulePdfAlbum()`
-- `bot.on('message:document')` (L1133) -> `takeForPdf()`
-- `bot.command('stats')` (L1267) -> `bandwidthLines()`, `cacheSize()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
-- `bot.on(['message:photo', 'message:video'])` (L1304) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
-- `bot.on('message:text')` (L1373) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
-- `bot.callbackQuery(SCREENSHOT_DATA)` (L1524) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
-- `bot.callbackQuery(DISMISS_DATA)` (L1539) -> `mayScreenshot()`
-- `bot.on('callback_query:data')` (L1547) -> (inline)
-- `bot.catch()` (L1593) -> (inline)
+- `bot.command(['clip', 'c'])` (L710) -> `mayScreenshot()`, `parseTime()`, `sendClip()`, `videoIn()`
+- `bot.command(['frame', 'f'])` (L772) -> `parseTime()`, `sendFrames()`, `videoIn()`
+- `bot.command('file')` (L842) -> `isReddit()`, `mayUseReddit`, `postOfMessage()`, `sendFiles()`, `videoIn()`
+- `bot.command('sticker')` (L925) -> `imageIn()`, `sendSticker()`, `stickerEmoji()`
+- `bot.callbackQuery(STICKER_PACK_DATA)` (L961) -> `packName()`
+- `bot.command('pdf')` (L1034) -> `makePdf()`, `pdfFileName()`, `pdfPageOf()`, `schedulePdfAlbum()`
+- `bot.on('message:document')` (L1136) -> `takeForPdf()`
+- `bot.command('stats')` (L1270) -> `bandwidthLines()`, `cacheSize()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
+- `bot.on(['message:photo', 'message:video'])` (L1307) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
+- `bot.on('message:text')` (L1376) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
+- `bot.callbackQuery(SCREENSHOT_DATA)` (L1573) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
+- `bot.callbackQuery(DISMISS_DATA)` (L1588) -> `mayScreenshot()`
+- `bot.on('callback_query:data')` (L1596) -> (inline)
+- `bot.catch()` (L1642) -> (inline)
 
 ## External Dependencies (most imported)
 - `node:fs` - 6 import sites
@@ -119,7 +119,7 @@ have no Telegram dependency; site modules don't import each other; subprocesses 
 
 ### Community 0 - "Bot Config & Access Control"
 Cohesion: 0.07
-Nodes (36): bot.js, bot, mayUseReddit, mayScreenshot(), node:fs, node:fs/promises, node:path, UPLOAD_LIMIT (+28 more)
+Nodes (36): bot.js, bot, mayUseReddit, mayScreenshot(), node:fs, node:fs/promises, node:path, OWNER_USERS (+28 more)
 
 ### Community 1 - "Download Cache"
 Cohesion: 0.5
@@ -127,7 +127,7 @@ Nodes (4): getMedia(), loadOrDownload(), pruneCache(), inFlight
 
 ### Community 2 - "Captions, Loader & Album Sending"
 Cohesion: 0.08
-Nodes (22): buildCaption(), startLoader(), siteOf(), isReddit(), sendAlbums(), screenshotKeyboard(), siteName(), escapeHtml() (+14 more)
+Nodes (22): buildCaption(), startLoader(), siteOf(), isReddit(), sendAlbums(), escapeHtml(), screenshotKeyboard(), siteName() (+14 more)
 
 ### Community 3 - "Error Messages"
 Cohesion: 0.0
@@ -139,11 +139,11 @@ Nodes (3): bot.command('chatid'), helpText(), bot.command(['start', 'help'])
 
 ### Community 5 - "/clip & Finding a Video's Post"
 Cohesion: 0.12
-Nodes (18): postOfMessage(), videoSource(), sendClip(), bot.command('clip'), clipError(), downloadFromTelegram(), keyOfBotVideo(), rememberPost() (+10 more)
+Nodes (18): postOfMessage(), videoSource(), sendClip(), bot.command(['clip', 'c']), clipError(), downloadFromTelegram(), keyOfBotVideo(), rememberPost() (+10 more)
 
 ### Community 6 - "/frame"
 Cohesion: 0.5
-Nodes (5): sendFrames(), bot.command('frame'), FRAME_MAX, FRAME_TIME, FRAME_USAGE
+Nodes (5): sendFrames(), bot.command(['frame', 'f']), FRAME_USAGE, FRAME_MAX, FRAME_TIME
 
 ### Community 7 - "/file"
 Cohesion: 0.67
@@ -166,8 +166,8 @@ Cohesion: 0.5
 Nodes (4): bot.on(['message:photo', 'message:video']), resendMedia(), COLLECT_MS, pendingMedia
 
 ### Community 12 - "Links to Downloads (Request Flow)"
-Cohesion: 0.4
-Nodes (5): sendMedia(), bot.on('message:text'), deliver(), archiveCopy(), replyUnsupportedSite()
+Cohesion: 0.22
+Nodes (9): sendMedia(), bot.on('message:text'), deliver(), alertFailure(), archiveCopy(), replyUnsupportedSite(), ALERT_EVERY_MS, EXPECTED_FAILURES (+1 more)
 
 ### Community 13 - "Screenshot Buttons"
 Cohesion: 0.1
@@ -183,7 +183,7 @@ Nodes (37): facebook.js, parseFacebookLink(), downloadImage(), readFacebookPhoto
 
 ### Community 16 - "ffmpeg (Frames, Clips, Stickers)"
 Cohesion: 0.14
-Nodes (33): frames.js, run, FFMPEG, makeSticker(), cutClip(), dropRepeats(), ensureH264(), ffmpegMode (+25 more)
+Nodes (33): frames.js, run, dropRepeats(), FFMPEG, makeSticker(), cutClip(), ensureH264(), extractFrames() (+25 more)
 
 ### Community 17 - "Instagram, Keys & yt-dlp"
 Cohesion: 0.15
