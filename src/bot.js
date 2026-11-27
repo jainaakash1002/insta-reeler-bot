@@ -13,6 +13,7 @@ import { parseSnapchatLink, resolveSnapchatShareLink } from './snapchat.js';
 import { parseThreadsLink, resolveThreadsShareLink } from './threads.js';
 import { parseXLink, resolveXShareLink } from './x.js';
 import { cutClip, dropRepeats, ensureH264, extractFrames, ffmpegMode, grabFrameAt, makeSticker, toJpeg, videoDuration } from './frames.js';
+import { fileIdOf, getFileIds, setFileIds } from './fileIds.js';
 import { buildPdf, embeddable, jpegInfo } from './pdf.js';
 import { downloadMedia, hasLogin, needsLogin, parseInstagramLink, requestFor, resolveShareLink } from './instagram.js';
 
@@ -395,6 +396,7 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}, 
       const message = await sendOne(ctx, chunk[0], { ...first, ...messageOptions }); // an album needs at least 2 items
       ids.push(message.message_id);
       if (key) rememberPost(message, key);
+      if (key && chunk[0].n) await setFileIds(key, { items: [fileIdOf(message, chunk[0].n)].filter(Boolean) });
       continue;
     }
     const messages = await ctx.replyWithMediaGroup(
@@ -408,6 +410,7 @@ async function sendAlbums(ctx, items, captionOptions = {}, messageOptions = {}, 
     );
     ids.push(...messages.map((m) => m.message_id));
     if (key) messages.forEach((message) => rememberPost(message, key));
+    if (key && chunk[0].n) await setFileIds(key, { items: messages.map((m, j) => fileIdOf(m, chunk[j].n)).filter(Boolean) });
     rememberAlbum(messages); // so /pdf on any item gets the whole album
   }
   return ids;
@@ -1523,10 +1526,12 @@ async function deliver(ctx, key, media) {
   if (single && sendable.length === 1 && !media.partial && !media.hidden) {
     const message = await sendOne(ctx, sendable[0], { caption, parse_mode: 'HTML', ...buttons });
     rememberPost(message, key);
+    await setFileIds(key, { items: [fileIdOf(message, 1)].filter(Boolean), count: 1, caption });
     return { complete, sent: [message.message_id] };
   }
 
   const sent = await sendAlbums(ctx, sendable, { caption, parse_mode: 'HTML' }, {}, key);
+  await setFileIds(key, { items: [], count: items.length, caption });
 
   const notes = tooBig.map(
     (item) =>
@@ -1618,6 +1623,113 @@ async function alertFailure(ctx, site, keyOrLink, err, message) {
     await bot.api.sendMessage(ARCHIVE_CHAT_ID, text, { ...topic, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   } catch (alertErr) {
     console.error('failure alert failed:', alertErr?.description ?? alertErr);
+  }
+}
+
+// ---------- inline mode ----------
+// "@<bot> <link>" in any chat. Needs /setinline and /setinlinefeedback (100%) in @BotFather.
+// - A link the bot already sent (file_id cache, src/fileIds.js): one result per item, sent at once.
+// - A new link: one "⏳ Downloading…" result. Once the user sends it, chosen_inline_result gives
+//   its inline_message_id; the bot downloads, uploads the item to the archive chat (else the
+//   user's private chat) to get a file_id, swaps it into the inline message (editMessageMedia
+//   can't upload) and deletes the upload. Posts with several items: the first one, with a note.
+// Telegram wants an answer within ~10 s, hence the placeholder; nothing is downloaded until a
+// result is chosen, so typing a link doesn't cost bandwidth.
+const INLINE_RESULT = /^dl:([\w.-]+)$/;
+const parseLink = (text) =>
+  parseInstagramLink(text) ?? parseFacebookLink(text) ?? parseRedditLink(text) ?? parseSnapchatLink(text) ?? parseXLink(text) ?? parseThreadsLink(text);
+const SHARE_RESOLVERS = { facebook: resolveFacebookShareLink, reddit: resolveRedditShareLink, snapchat: resolveSnapchatShareLink, x: resolveXShareLink, threads: resolveThreadsShareLink };
+const inlineNote = (title) => ({ cache_time: 5, is_personal: true, button: { text: title, start_parameter: 'inline' } });
+
+bot.on('inline_query', async (ctx) => {
+  const text = ctx.inlineQuery.query.trim();
+  const link = text ? parseLink(text) : null;
+  if (!link) return ctx.answerInlineQuery([], inlineNote('Paste a post link after my name')).catch(() => {});
+  const refuse = (title) => ctx.answerInlineQuery([], inlineNote(title)).catch(() => {});
+  if (link.unsupported) return refuse('I can’t download that kind of link');
+  if ((link.site === 'reddit' || (link.key && isReddit(link.key))) && !mayUseReddit(ctx.from.id)) return refuse('Reddit is only for the bot’s owner');
+
+  let key = link.key;
+  if (!key) {
+    const resolve = SHARE_RESOLVERS[link.site] ?? resolveShareLink;
+    key = await Promise.race([resolve(link.share).catch(() => null), new Promise((r) => setTimeout(() => r(null), 6000))]);
+    if (!key) return refuse('Couldn’t open that share link');
+  }
+  if (needsLogin(key)) return refuse('Stories are paused for now');
+
+  const cached = await getFileIds(key);
+  if (cached?.items.length) {
+    const more = cached.count > cached.items.length;
+    const results = cached.items.slice(0, 50).map((item) => {
+      const options = { caption: cached.caption, parse_mode: 'HTML' };
+      const id = `c:${item.n}:${key}`.slice(0, 64);
+      const title = cached.items.length > 1 || more ? `${siteName(key)} · item ${item.n}` : `${siteName(key)} ${item.kind}`;
+      return item.kind === 'video'
+        ? { type: 'video', id, video_file_id: item.fileId, title, ...options }
+        : { type: 'photo', id, photo_file_id: item.fileId, ...options };
+    });
+    return ctx.answerInlineQuery(results, { cache_time: 60, is_personal: true }).catch((err) => console.error('[inline] answer:', err?.description ?? err));
+  }
+
+  await ctx
+    .answerInlineQuery(
+      [
+        {
+          type: 'article',
+          id: `dl:${key}`,
+          title: `Send from ${siteName(key)}`,
+          description: 'Tap to send it here. It appears in a few seconds.',
+          input_message_content: { message_text: `⏳ Downloading from ${siteName(key)}…` },
+          // A keyboard is what makes Telegram report the inline_message_id in chosen_inline_result.
+          reply_markup: new InlineKeyboard().url('⏳', `https://t.me/${ctx.me.username}`),
+        },
+      ],
+      { cache_time: 0, is_personal: true },
+    )
+    .catch((err) => console.error('[inline] answer:', err?.description ?? err));
+});
+
+bot.on('chosen_inline_result', (ctx) => {
+  const { result_id: resultId, inline_message_id: inlineId } = ctx.chosenInlineResult;
+  const key = resultId.match(INLINE_RESULT)?.[1];
+  if (!key || !inlineId || !requestFor(key)) return;
+  sendInline(ctx, key, inlineId).catch((err) => console.error(`[${key}] sendInline failed:`, err));
+});
+
+async function sendInline(ctx, key, inlineId) {
+  const edit = (text) => ctx.api.editMessageTextInline(inlineId, text).catch(() => {});
+  try {
+    const media = await getMedia(key);
+    const items = media.items.map((item, i) => ({ ...item, n: i + 1 }));
+    const item = items.find(fitsTelegram);
+    if (!item) throw Object.assign(new Error('Too big for Telegram'), { clipMessage: 'That is over 50 MB, too big for Telegram.' });
+    const caption = buildCaption(media, key);
+    const more = items.length > 1 ? `\n➕ ${items.length - 1} more: send the link to @${ctx.me.username}` : '';
+
+    // Upload where it won't bother anyone, take the file_id, delete the upload.
+    const chat = ARCHIVE_CHAT_ID || ctx.from.id;
+    const topic = ARCHIVE_CHAT_ID && ARCHIVE_TOPIC_ID ? { message_thread_id: ARCHIVE_TOPIC_ID } : {};
+    const upload =
+      item.kind === 'photo'
+        ? await bot.api.sendPhoto(chat, new InputFile(item.file), { ...topic, disable_notification: true })
+        : await bot.api.sendVideo(chat, new InputFile(item.file), { ...videoOptions(item), ...topic, disable_notification: true });
+    const sent = fileIdOf(upload, item.n);
+    await bot.api.deleteMessage(chat, upload.message_id).catch(() => {});
+    await setFileIds(key, { items: [sent], count: items.length, caption });
+
+    const options = { caption: caption + escapeHtml(more), parse_mode: 'HTML' };
+    await ctx.api.editMessageMediaInline(
+      inlineId,
+      item.kind === 'photo' ? InputMediaBuilder.photo(sent.fileId, options) : InputMediaBuilder.video(sent.fileId, { ...videoOptions(item), ...options }),
+      { reply_markup: { inline_keyboard: [] } },
+    );
+    countDownload(key, ctx.from.id);
+    console.log(`[${key}] sent inline (item ${item.n} of ${items.length})`);
+  } catch (err) {
+    console.error(`[${key}] inline:`, err?.stderr || err?.description || err);
+    const message = err.clipMessage ?? describeError(err, key);
+    await edit(`❌ ${message}`);
+    await alertFailure(ctx, siteName(key), key, err, message);
   }
 }
 

@@ -51,6 +51,7 @@ The code is split into these parts:
 - `src/reddit.js`: Reddit link parsing, share-link resolution, the login cookies (or an old API token), reading a post's media and downloading images/MP4s.
 - `src/frames.js`: `ffprobe` and `ffmpeg` (screenshots, `ensureH264`, clips, frames, stickers, image → JPEG).
 - `src/pdf.js`: the minimal PDF writer for `/pdf`.
+- `src/fileIds.js`: the file_id cache (key → Telegram file_ids already uploaded), in memory for now; its async `getFileIds`/`setFileIds` are the only access, so Redis can replace the Map later.
 - `yt-dlp-plugins/`: the yt-dlp plugin.
 
 **Keys.** Everything downloadable is identified by a key string. The key is the cache folder name and travels in screenshot-button callback data. `KEY_TYPES` in `instagram.js` defines the formats:
@@ -174,6 +175,8 @@ Videos in stories and highlights (`needsLogin(key)`) get two buttons: **1 screen
 **Error messages.** Errors carry a `source` (`'yt-dlp'` from `downloadMedia`, `'ffmpeg'` from `extractFrames`). `describeError` only blames Instagram (expired story, login, private post) for `source: 'yt-dlp'`. "Not installed" is reserved for `ENOENT` from a spawn, not from a missing file.
 
 **Re-sending media.** A photo or video message sent or forwarded to the bot is sent back by `file_id` (the largest photo size), with no caption. Telegram reuses the file, so nothing is downloaded or uploaded. Photos and videos from the same chat are collected for `COLLECT_MS` (1.5 s after the last one) in `pendingMedia`, then `resendMedia` sends them in the order sent, as albums of up to 10. After every album is sent, it deletes the originals with `deleteMessages`; if a send fails, they stay.
+
+**Inline mode.** `@Aj_reeler_bot <link>` in any chat. Needs `/setinline` and `/setinlinefeedback` (100%) in @BotFather (`getMe` → `supports_inline_queries`). `inline_query`: a link in the file_id cache (`deliver`/`sendAlbums` fill it with every item they send) answers at once with one cached photo/video result per item (ids `c:<n>:<key>`); a new link answers with one article `dl:<key>` ("⏳ Downloading…", with a URL button, since only a message with a keyboard gets an `inline_message_id`). Share links are resolved inside the query (6 s limit; Telegram wants an answer in ~10 s). Nothing is downloaded until the result is sent: `chosen_inline_result` → `sendInline` downloads (`getMedia`), uploads the first item that fits to `ARCHIVE_CHAT_ID` (its topic; else the user's private chat) with notifications off, takes its file_id, deletes the upload (needs delete rights there), caches it and swaps it into the inline message with `editMessageMediaInline` (inline messages can't take an upload). Posts with several items send the first, with a "➕ N more" note. Errors replace the placeholder and go through `alertFailure`. The cache is lost when the instance sleeps, so a new link always costs one download.
 
 **Close buttons.** An API transformer adds a **✖️** button (`x`, `CLOSE_DATA`; anyone can tap it) to every `sendMessage` without its own `reply_markup`, except loaders (text starting with a moon phase) and the archive chat; `loader.fail` adds it to the error. Tapping it deletes the message.
 

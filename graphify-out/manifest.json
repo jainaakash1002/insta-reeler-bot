@@ -1,11 +1,15 @@
 {
   "src/bot.js": {
-    "hash": "b6086a582f5accb8a4ec2e48d9ab2809",
-    "lines": 1807
+    "hash": "49bb0b6f47ff120a1c28dcdd471e6c1b",
+    "lines": 1919
   },
   "src/facebook.js": {
     "hash": "e696da1292f2d2f4bcaaf611a1c5717e",
     "lines": 329
+  },
+  "src/fileIds.js": {
+    "hash": "1a7ff7680372e8c1b2f08c667d83cee5",
+    "lines": 48
   },
   "src/frames.js": {
     "hash": "19e59bb00c8fb8dd8b823751d5b86b2a",

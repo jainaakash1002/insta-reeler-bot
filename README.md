@@ -32,6 +32,8 @@ Reply to a photo, video or album the bot sent with **`/file`** to get the origin
 
 **Photos → PDF:** reply to a photo or an album with **`/pdf`** (or `/pdf Notes` to name it `Notes.pdf`), or send an album with `/pdf` as its caption. You get one PDF with an A4 page per photo. Works on albums you sent the bot and on downloaded posts; a downloaded post's PDF is named after its account (e.g. `natgeo.pdf`) unless you give a name. Open to everyone who may use the bot.
 
+**Inline mode:** in any chat, type `@Aj_reeler_bot <link>` and tap the result. A “⏳ Downloading…” message is sent and turns into the video or photo a few seconds later (for a post with several items, the first one). Links the bot sent recently show up at once. Turn it on once in @BotFather: `/setinline` (any placeholder text, e.g. “Paste a link”) and `/setinlinefeedback` → 100%.
+
 After any command works (`/start`, `/help`, `/stats`, `/chatid`, `/clip`, `/frame`, `/file`, `/sticker`, `/pdf`), the bot deletes your command message to keep the chat clean. Every text message from the bot has a ✖️ button that deletes it in one tap. When a post has several videos, each video's screenshot row has its own ✖️ (removes just that row), and the last ✖️ Cancel removes them all. Frames come without a caption, and clips without the times.
 
 Reply to a photo with **`/sticker`** (or `/sticker 😂` to choose the emoji) to get it as a Telegram sticker; send a PNG with a transparent background as a file to keep the transparency. **➕ Add to my pack** under the sticker adds it to your own pack (created the first time, at `t.me/addstickers/u<your id>_by_<bot>`). Open to everyone who may use the bot.
