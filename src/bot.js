@@ -85,6 +85,23 @@ bot.api.config.use(async (prev, method, payload, signal) => {
   }
 });
 
+// Every text message the bot sends gets a "✖️" button (CLOSE_DATA) that deletes it, unless it
+// already has buttons, is a loader (starts with a moon phase; its error gets one in fail()), or
+// goes to the archive chat.
+const CLOSE_DATA = 'x';
+const closeKeyboard = { inline_keyboard: [[{ text: '✖️', callback_data: CLOSE_DATA }]] };
+bot.api.config.use((prev, method, payload, signal) => {
+  if (
+    method === 'sendMessage' &&
+    !payload.reply_markup &&
+    String(payload.chat_id) !== ARCHIVE_CHAT_ID &&
+    !LOADER_FRAMES.some((moon) => String(payload.text).startsWith(moon))
+  ) {
+    payload = { ...payload, reply_markup: closeKeyboard };
+  }
+  return prev(method, payload, signal);
+});
+
 // After the computer sleeps or changes network, the open getUpdates request can sit on a
 // dead connection until grammY's 500 s client timeout: the bot looks alive but ignores
 // messages for minutes. getUpdates long-polls for 30 s, so drop it after GET_UPDATES_LIMIT_MS;
@@ -221,7 +238,7 @@ async function startLoader(ctx, label, { replyTo, action = 'upload_video' } = {}
     /** Replaces the loader with `errorText`, or sends it as a new message if that fails. */
     async fail(errorText) {
       stop();
-      await ctx.api.editMessageText(chatId, message.message_id, errorText).catch(async (editErr) => {
+      await ctx.api.editMessageText(chatId, message.message_id, errorText, { reply_markup: closeKeyboard }).catch(async (editErr) => {
         console.error(`couldn't edit the status message:`, editErr?.description ?? editErr);
         await ctx.api
           .sendMessage(chatId, errorText, topic)
@@ -312,7 +329,7 @@ function screenshotKeyboard(key, videos) {
   const rows = videos
     .map((video) => ({ video, one: `s1:${video.n}:${key}`, all: `ss:${video.n}:${key}` }))
     .filter(({ all }) => Buffer.byteLength(all) <= CALLBACK_DATA_LIMIT)
-    .slice(0, MAX_BUTTONS / 2);
+    .slice(0, Math.floor((MAX_BUTTONS - 1) / 3));
   if (rows.length === 0) return undefined;
   // The "1 screenshot" button is only for stories and highlights; reels and posts get "all" only.
   const offerOne = needsLogin(key);
@@ -322,6 +339,8 @@ function screenshotKeyboard(key, videos) {
     const label = rows.length === 1 ? '📸' : `📸 #${video.n}:`;
     if (offerOne) keyboard.text(`${label} 1 screenshot`, one).text(`${label} all ${SCREENSHOT_COUNT}`, all);
     else keyboard.text(rows.length === 1 ? `📸 Get ${SCREENSHOT_COUNT} screenshots` : `${label} ${SCREENSHOT_COUNT} screenshots`, all);
+    // Several videos: each row gets its own ✖️ that removes just that row.
+    if (rows.length > 1) keyboard.text('✖️', `${DISMISS_DATA}:${video.n}`);
   });
   // One video: Cancel sits next to its button(s). Several: Cancel gets its own last row.
   if (rows.length > 1) keyboard.row();
@@ -334,13 +353,14 @@ function screenshotKeyboard(key, videos) {
  * is done with that video). A message that was only there for those buttons gets deleted;
  * a video keeps its message and just loses the buttons.
  */
-function planButtonCleanup(message, n, key, deleteWhole) {
+function planButtonCleanup(message, n, key, deleteWhole) { // key null: any key (a row's ✖️)
   if (deleteWhole) return { deleteMessage: true }; // "1 screenshot": the whole message goes
   const rows = message?.reply_markup?.inline_keyboard;
   if (!rows) return null;
   const isThisVideo = (button) => {
+    if (button.callback_data === `${DISMISS_DATA}:${n}`) return true; // the row's own ✖️
     const match = button.callback_data?.match(SCREENSHOT_DATA);
-    return match && Number(match[2]) === n && match[3] === key;
+    return match && Number(match[2]) === n && (key === null || match[3] === key);
   };
   let kept = rows.map((row) => row.filter((button) => !isThisVideo(button))).filter((row) => row.length);
   // Only "Cancel" left: no screenshots to offer any more, so it goes too.
@@ -574,17 +594,22 @@ function helpText(userId) {
   ].join('\n');
 }
 
-bot.command(['start', 'help'], (ctx) => ctx.reply(helpText(ctx.from?.id), { parse_mode: 'HTML' }));
+bot.command(['start', 'help'], async (ctx) => {
+  await ctx.reply(helpText(ctx.from?.id), { parse_mode: 'HTML' });
+  await deleteCommand(ctx);
+});
 
 // /chatid: the current chat's id, e.g. to set up a group for the bot. Owner only (OWNER_USER_IDS).
 bot.command('chatid', (ctx) => {
   if (!isOwner(ctx.from?.id)) return ctx.reply(OWNER_ONLY, { reply_parameters: { message_id: ctx.msg.message_id } });
   const topic = topicOf(ctx.msg).message_thread_id;
-  return ctx.reply(
-    `This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})` +
-      (topic ? `\nThis topic’s ID: <code>${topic}</code>` : ''),
-    { parse_mode: 'HTML' },
-  );
+  return ctx
+    .reply(
+      `This chat’s ID: <code>${ctx.chat.id}</code> (${escapeHtml(ctx.chat.type)})` +
+        (topic ? `\nThis topic’s ID: <code>${topic}</code>` : ''),
+      { parse_mode: 'HTML' },
+    )
+    .then(() => deleteCommand(ctx));
 });
 
 // ---------- /clip ----------
@@ -654,6 +679,25 @@ function rememberPost(message, key) {
     sentPosts.set(slot, key);
   }
   while (sentPosts.size > SENT_POSTS_MAX) sentPosts.delete(sentPosts.keys().next().value);
+}
+
+/**
+ * After a command (/clip, /frame, /file, /sticker, /pdf) worked, deletes the user's command
+ * message, like a link message after its download. Not when the command is the caption of the
+ * photo it works on (that would delete the photo). Fails silently in groups without admin rights.
+ */
+async function deleteCommand(ctx) {
+  const msg = ctx.msg;
+  if (!msg?.text) return;
+  await ctx.api.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+}
+
+/** The account a downloaded post came from (its username, else author), for naming /pdf files. */
+const postOwners = new Map(); // key -> username or author
+async function ownerOfPost(key) {
+  if (postOwners.has(key)) return postOwners.get(key);
+  const meta = await fs.readFile(path.join(CACHE_DIR, key, 'meta.json'), 'utf8').then(JSON.parse, () => null);
+  return meta?.username ?? meta?.author ?? null;
 }
 
 function postOfMessage(message) {
@@ -741,14 +785,14 @@ async function sendClip(ctx, target, video, start, end) {
     if (size > UPLOAD_LIMIT.video) throw clipError('That clip is over 50 MB, too big for Telegram. Try a shorter part.');
 
     loader.set('Sending the clip…');
-    const header = `✂️ ${formatTime(start)}–${formatTime(stop)}`;
+    const header = `${formatTime(start)}–${formatTime(stop)}`; // for the log only
     await ctx.replyWithVideo(new InputFile(out), {
       ...videoOptions({ width: video.width, height: video.height, duration: stop - start }),
-      caption: caption ? `${header}\n${caption}` : header,
-      parse_mode: 'HTML',
+      ...(caption ? { caption, parse_mode: 'HTML' } : {}),
       ...replyOptions,
     });
     await loader.done();
+    await deleteCommand(ctx);
     console.log(`[clip] sent ${header} (${(size / 1024 / 1024).toFixed(1)} MB) to chat ${ctx.chat.id}${found ? ` from ${found.key}` : ''}`);
   } catch (err) {
     console.error('[clip]', err?.stderr || err);
@@ -808,20 +852,16 @@ async function sendFrames(ctx, target, video, times, asFile) {
     const skipped = spread ? 0 : times.length - frames.length;
 
     loader.set(frames.length === 1 ? 'Sending the frame…' : `Sending ${frames.length} frames…`);
-    const header = `🖼 ${frames.map(({ time }) => formatTime(time)).join(', ')}` + (skipped ? ` (${skipped} past the end of the video)` : '');
-    const caption = got.caption ? `${header}\n${got.caption}` : header;
+    // No caption: the pictures speak for themselves. Only times past the end get a note.
     if (asFile) {
-      if (frames.length === 1) await ctx.replyWithDocument(new InputFile(frames[0].file), { caption, parse_mode: 'HTML', ...replyOptions });
-      else {
-        await ctx.replyWithMediaGroup(
-          frames.map(({ file }, j) => InputMediaBuilder.document(new InputFile(file), j === frames.length - 1 ? { caption, parse_mode: 'HTML' } : {})),
-          replyOptions,
-        );
-      }
+      if (frames.length === 1) await ctx.replyWithDocument(new InputFile(frames[0].file), replyOptions);
+      else await ctx.replyWithMediaGroup(frames.map(({ file }) => InputMediaBuilder.document(new InputFile(file))), replyOptions);
     } else {
-      await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), { caption, parse_mode: 'HTML' }, replyOptions);
+      await sendAlbums(ctx, frames.map(({ file }) => ({ file, kind: 'photo' })), {}, replyOptions);
     }
+    if (skipped) await ctx.reply(`⚠️ ${skipped} time${skipped === 1 ? ' was' : 's were'} past the end of the video (${formatTime(length)}).`, replyOptions);
     await loader.done();
+    await deleteCommand(ctx);
     console.log(`[frame] sent ${frames.length} frame(s)${asFile ? ' as files' : ''} to chat ${ctx.chat.id}${found ? ` from ${found.key}` : ''}`);
   } catch (err) {
     console.error('[frame]', err?.stderr || err);
@@ -888,6 +928,7 @@ async function sendFiles(ctx, target, key, only) {
     const skipped = wanted.length - files.length;
     if (skipped) await ctx.reply(`⚠️ ${skipped} file${skipped === 1 ? ' is' : 's are'} over 50 MB, too big for Telegram.`, replyOptions);
     await loader.done();
+    await deleteCommand(ctx);
     console.log(`[${key}] sent ${files.length} file(s) to chat ${ctx.chat.id}`);
   } catch (err) {
     console.error(`[${key}] /file`, err?.stderr || err);
@@ -947,6 +988,7 @@ async function sendSticker(ctx, target, image, emoji) {
       reply_parameters: { message_id: target.message_id, allow_sending_without_reply: true },
       reply_markup: new InlineKeyboard().text('➕ Add to my pack', STICKER_PACK_DATA),
     });
+    await deleteCommand(ctx);
     console.log(`[sticker] sent ${emoji} sticker to chat ${ctx.chat.id}`);
   } catch (err) {
     console.error('[sticker]', err?.stderr || err);
@@ -1025,10 +1067,10 @@ function rememberAlbum(messages) {
   while (sentAlbums.size > SENT_ALBUMS_MAX) sentAlbums.delete(sentAlbums.keys().next().value);
 }
 
-/** "Notes 2026" → "Notes 2026.pdf"; nothing usable → "photos-2026-11-26.pdf". */
-function pdfFileName(text) {
-  const name = (text ?? '').replace(/[^\p{L}\p{M}\p{N} ._()-]+/gu, '').replace(/^[.\s]+/, '').trim().slice(0, 60).replace(/\.pdf$/i, '');
-  return `${name || `photos-${new Date().toISOString().slice(0, 10)}`}.pdf`;
+/** "Notes 2026" → "Notes 2026.pdf"; nothing usable → "<fallback>.pdf", else "photos-2026-11-26.pdf". */
+function pdfFileName(text, fallback = '') {
+  const clean = (value) => (value ?? '').replace(/[^\p{L}\p{M}\p{N} ._()-]+/gu, '').replace(/^[.\s]+/, '').trim().slice(0, 60).replace(/\.pdf$/i, '');
+  return `${clean(text) || clean(fallback) || `photos-${new Date().toISOString().slice(0, 10)}`}.pdf`;
 }
 
 bot.command('pdf', (ctx) => {
@@ -1056,7 +1098,11 @@ bot.command('pdf', (ctx) => {
     target.media_group_id && !remembered
       ? 'Only the photo you replied to: I no longer remember the rest of that album. Send the photos again to get them all.'
       : '';
-  makePdf(ctx, pages, name, target.message_id, note).catch((err) => console.error('[pdf] failed:', err));
+  // No name given and it's a post the bot downloaded: name the PDF after its account.
+  const key = !ctx.match.trim() && target.from?.id === ctx.me.id ? postOfMessage(target) : null;
+  (key ? ownerOfPost(key) : Promise.resolve(null))
+    .then((owner) => makePdf(ctx, pages, owner ? pdfFileName('', owner) : name, target.message_id, note))
+    .catch((err) => console.error('[pdf] failed:', err));
 });
 
 /** Album items that arrived before the /pdf caption went to the re-send queue: take them back. */
@@ -1121,6 +1167,7 @@ async function makePdf(ctx, pages, name, replyTo, note = '') {
       reply_parameters: { message_id: replyTo, allow_sending_without_reply: true },
     });
     await loader.done();
+    await deleteCommand(ctx);
     console.log(`[pdf] sent ${jpegs.length} page(s), ${(size / 1024 / 1024).toFixed(1)} MB, to chat ${ctx.chat.id}`);
   } catch (err) {
     console.error('[pdf]', err?.stderr || err);
@@ -1292,7 +1339,8 @@ bot.command('stats', async (ctx) => {
     `Downloads sent: ${total}${bySite ? ` (${bySite})` : ''} · people: ${sinceStart.users.size}`,
     `Cache: ${cache.posts} post${cache.posts === 1 ? '' : 's'}, ${formatMb(cache.mb)} (kept 1 hour)`,
   ].join('\n');
-  return ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  await deleteCommand(ctx);
 });
 
 // ---------- re-sending media ----------
@@ -1465,6 +1513,11 @@ async function deliver(ctx, key, media) {
   const caption = buildCaption(media, key);
   const single = items.length === 1;
   const complete = tooBig.length === 0 && !media.partial && !media.hidden;
+  const owner = media.username ?? media.author;
+  if (owner) {
+    postOwners.set(key, owner);
+    while (postOwners.size > SENT_POSTS_MAX) postOwners.delete(postOwners.keys().next().value);
+  }
 
   // One reel or photo: caption and button on the same message, like Instagram shows it.
   if (single && sendable.length === 1 && !media.partial && !media.hidden) {
@@ -1590,6 +1643,20 @@ bot.callbackQuery(DISMISS_DATA, async (ctx) => {
   await ctx.answerCallbackQuery().catch(() => {});
   if (ctx.callbackQuery.message?.text !== undefined) return ctx.deleteMessage().catch(() => {});
   await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }).catch(() => {});
+});
+
+// A row's "✖️": removes that video's buttons only; the message goes once no buttons are left.
+bot.callbackQuery(new RegExp(`^${DISMISS_DATA}:(\\d+)$`), async (ctx) => {
+  if (!mayScreenshot(ctx.from?.id)) return ctx.answerCallbackQuery({ text: SCREENSHOTS_OWNER_ONLY }).catch(() => {});
+  await ctx.answerCallbackQuery().catch(() => {});
+  const plan = planButtonCleanup(ctx.callbackQuery.message, Number(ctx.match[1]), null, false);
+  if (plan) await applyButtonCleanup(ctx, plan);
+});
+
+// "✖️" on a text message from the bot: deletes it.
+bot.callbackQuery(CLOSE_DATA, async (ctx) => {
+  await ctx.answerCallbackQuery().catch(() => {});
+  await ctx.deleteMessage().catch(() => {});
 });
 
 // Buttons from older versions of the bot

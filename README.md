@@ -30,7 +30,9 @@ Reply to a video with **`/frame 0:12`** (short: `/f 0:12`) to get the picture at
 
 Reply to a photo, video or album the bot sent with **`/file`** to get the original files as documents, without Telegram's compression (`/file 3` for only item 3). Open to everyone who may use the bot.
 
-**Photos → PDF:** reply to a photo or an album with **`/pdf`** (or `/pdf Notes` to name it `Notes.pdf`), or send an album with `/pdf` as its caption. You get one PDF with an A4 page per photo. Works on albums you sent the bot and on downloaded posts. Open to everyone who may use the bot.
+**Photos → PDF:** reply to a photo or an album with **`/pdf`** (or `/pdf Notes` to name it `Notes.pdf`), or send an album with `/pdf` as its caption. You get one PDF with an A4 page per photo. Works on albums you sent the bot and on downloaded posts; a downloaded post's PDF is named after its account (e.g. `natgeo.pdf`) unless you give a name. Open to everyone who may use the bot.
+
+After any command works (`/start`, `/help`, `/stats`, `/chatid`, `/clip`, `/frame`, `/file`, `/sticker`, `/pdf`), the bot deletes your command message to keep the chat clean. Every text message from the bot has a ✖️ button that deletes it in one tap. When a post has several videos, each video's screenshot row has its own ✖️ (removes just that row), and the last ✖️ Cancel removes them all. Frames come without a caption, and clips without the times.
 
 Reply to a photo with **`/sticker`** (or `/sticker 😂` to choose the emoji) to get it as a Telegram sticker; send a PNG with a transparent background as a file to keep the transparency. **➕ Add to my pack** under the sticker adds it to your own pack (created the first time, at `t.me/addstickers/u<your id>_by_<bot>`). Open to everyone who may use the bot.
 
