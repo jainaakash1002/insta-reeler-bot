@@ -1671,6 +1671,9 @@ bot.on('inline_query', async (ctx) => {
     return ctx.answerInlineQuery(results, { cache_time: 60, is_personal: true }).catch((err) => console.error('[inline] answer:', err?.description ?? err));
   }
 
+  // Start downloading and uploading now, while the user looks at the result: by the time they
+  // tap it, the file_id is usually ready. A link pasted but never sent costs that one download.
+  prepareInline(key, ctx.from.id).catch(() => {});
   await ctx
     .answerInlineQuery(
       [
@@ -1696,27 +1699,42 @@ bot.on('chosen_inline_result', (ctx) => {
   sendInline(ctx, key, inlineId).catch((err) => console.error(`[${key}] sendInline failed:`, err));
 });
 
-async function sendInline(ctx, key, inlineId) {
-  const edit = (text) => ctx.api.editMessageTextInline(inlineId, text).catch(() => {});
-  try {
+/*
+ * Downloads a post and uploads its first item that fits, once, for inline mode: the upload goes
+ * where it won't bother anyone (the archive chat, else the user's private chat), its file_id is
+ * cached and the upload deleted. Started by inline_query (early) and awaited by
+ * chosen_inline_result; both share the same promise. Failures are forgotten so a retry can work.
+ */
+const inlinePrep = new Map(); // key -> Promise<{ sent, item, count, caption }>
+function prepareInline(key, userId) {
+  if (inlinePrep.has(key)) return inlinePrep.get(key);
+  const job = (async () => {
     const media = await getMedia(key);
     const items = media.items.map((item, i) => ({ ...item, n: i + 1 }));
     const item = items.find(fitsTelegram);
     if (!item) throw Object.assign(new Error('Too big for Telegram'), { clipMessage: 'That is over 50 MB, too big for Telegram.' });
     const caption = buildCaption(media, key);
-    const more = items.length > 1 ? `\n➕ ${items.length - 1} more: send the link to @${ctx.me.username}` : '';
-
-    // Upload where it won't bother anyone, take the file_id, delete the upload.
-    const chat = ARCHIVE_CHAT_ID || ctx.from.id;
+    const chat = ARCHIVE_CHAT_ID || userId;
     const topic = ARCHIVE_CHAT_ID && ARCHIVE_TOPIC_ID ? { message_thread_id: ARCHIVE_TOPIC_ID } : {};
     const upload =
       item.kind === 'photo'
         ? await bot.api.sendPhoto(chat, new InputFile(item.file), { ...topic, disable_notification: true })
         : await bot.api.sendVideo(chat, new InputFile(item.file), { ...videoOptions(item), ...topic, disable_notification: true });
     const sent = fileIdOf(upload, item.n);
-    await bot.api.deleteMessage(chat, upload.message_id).catch(() => {});
+    bot.api.deleteMessage(chat, upload.message_id).catch(() => {});
     await setFileIds(key, { items: [sent], count: items.length, caption });
+    return { sent, item, count: items.length, caption };
+  })();
+  inlinePrep.set(key, job);
+  const forget = () => inlinePrep.delete(key);
+  job.then(() => setTimeout(forget, 10 * 60 * 1000).unref(), forget);
+  return job;
+}
 
+async function sendInline(ctx, key, inlineId) {
+  try {
+    const { sent, item, count, caption } = await prepareInline(key, ctx.from.id);
+    const more = count > 1 ? `\n➕ ${count - 1} more: send the link to @${ctx.me.username}` : '';
     const options = { caption: caption + escapeHtml(more), parse_mode: 'HTML' };
     await ctx.api.editMessageMediaInline(
       inlineId,
@@ -1724,11 +1742,11 @@ async function sendInline(ctx, key, inlineId) {
       { reply_markup: { inline_keyboard: [] } },
     );
     countDownload(key, ctx.from.id);
-    console.log(`[${key}] sent inline (item ${item.n} of ${items.length})`);
+    console.log(`[${key}] sent inline (item ${item.n} of ${count})`);
   } catch (err) {
     console.error(`[${key}] inline:`, err?.stderr || err?.description || err);
     const message = err.clipMessage ?? describeError(err, key);
-    await edit(`❌ ${message}`);
+    await ctx.api.editMessageTextInline(inlineId, `❌ ${message}`).catch(() => {});
     await alertFailure(ctx, siteName(key), key, err, message);
   }
 }

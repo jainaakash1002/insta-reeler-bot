@@ -1,10 +1,10 @@
 # Graph Report - src + yt-dlp-plugins
 
 ## Corpus Check
-- Corpus: 11 files · ~26,359 words. AST-free extraction, no token cost.
+- Corpus: 11 files · ~26,512 words. AST-free extraction, no token cost.
 
 ## Summary
-- 392 nodes · 1119 edges · 26 communities detected
+- 394 nodes · 1124 edges · 26 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 0 edges (avg confidence: 0)
 - Token cost: 0 input · 0 output
 
@@ -44,14 +44,14 @@
 5. `deliver()` - 16 edges  (src/bot.js:L1508)
 6. `bot.on('message:text')` - 15 edges  (src/bot.js:L1427)
 7. `makePdf()` - 15 edges  (src/bot.js:L1142)
-8. `sendInline()` - 15 edges  (src/bot.js:L1699)
-9. `sendFrames()` - 14 edges  (src/bot.js:L835)
-10. `parseSnapchatLink()` - 14 edges  (src/snapchat.js:L219)
-11. `buildCaption()` - 13 edges  (src/bot.js:L265)
-12. `postOfMessage()` - 13 edges  (src/bot.js:L706)
+8. `sendFrames()` - 14 edges  (src/bot.js:L835)
+9. `parseSnapchatLink()` - 14 edges  (src/snapchat.js:L219)
+10. `buildCaption()` - 13 edges  (src/bot.js:L265)
+11. `postOfMessage()` - 13 edges  (src/bot.js:L706)
+12. `parseRedditLink()` - 13 edges  (src/reddit.js:L252)
 
 ## Hub Files (most connected modules)
-1. `src/bot.js` - 1064 edges
+1. `src/bot.js` - 1074 edges
 2. `src/facebook.js` - 172 edges
 3. `src/frames.js` - 172 edges
 4. `src/instagram.js` - 164 edges
@@ -76,14 +76,14 @@
 - `bot.command('stats')` (L1320) -> `bandwidthLines()`, `cacheSize()`, `deleteCommand()`, `escapeHtml()`, `formatMb()`, `isOwner()`, `resourceLines()`
 - `bot.on(['message:photo', 'message:video'])` (L1358) -> `resendMedia()`, `takeForPdf()`, `topicOf()`
 - `bot.on('message:text')` (L1427) -> `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseFacebookLink()`, `parseInstagramLink()`, `parseRedditLink()`, `parseSnapchatLink()`, `parseThreadsLink()`, `parseXLink()`, `replyUnsupportedSite()`, `sendMedia()`
-- `bot.on('inline_query')` (L1644) -> `getFileIds()`, `inlineNote()`, `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseLink()`, `siteName()`
-- `bot.on('chosen_inline_result')` (L1692) -> `requestFor()`, `sendInline()`
-- `bot.callbackQuery(SCREENSHOT_DATA)` (L1738) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
-- `bot.callbackQuery(DISMISS_DATA)` (L1753) -> `mayScreenshot()`
-- `bot.callbackQuery(new)` (L1761) -> `applyButtonCleanup()`, `mayScreenshot()`, `planButtonCleanup()`
-- `bot.callbackQuery(CLOSE_DATA)` (L1769) -> (inline)
-- `bot.on('callback_query:data')` (L1775) -> (inline)
-- `bot.catch()` (L1821) -> (inline)
+- `bot.on('inline_query')` (L1644) -> `getFileIds()`, `inlineNote()`, `isReddit()`, `mayUseReddit`, `needsLogin()`, `parseLink()`, `prepareInline()`, `siteName()`
+- `bot.on('chosen_inline_result')` (L1695) -> `requestFor()`, `sendInline()`
+- `bot.callbackQuery(SCREENSHOT_DATA)` (L1756) -> `isReddit()`, `mayScreenshot()`, `mayUseReddit`, `requestFor()`, `sendScreenshots()`
+- `bot.callbackQuery(DISMISS_DATA)` (L1771) -> `mayScreenshot()`
+- `bot.callbackQuery(new)` (L1779) -> `applyButtonCleanup()`, `mayScreenshot()`, `planButtonCleanup()`
+- `bot.callbackQuery(CLOSE_DATA)` (L1787) -> (inline)
+- `bot.on('callback_query:data')` (L1793) -> (inline)
+- `bot.catch()` (L1839) -> (inline)
 
 ## External Dependencies (most imported)
 - `node:fs` - 6 import sites
@@ -177,8 +177,8 @@ Cohesion: 0.22
 Nodes (9): sendMedia(), deliver(), bot.on('message:text'), alertFailure(), archiveCopy(), replyUnsupportedSite(), ALERT_EVERY_MS, EXPECTED_FAILURES (+1 more)
 
 ### Community 13 - "bot.js: inline mode"
-Cohesion: 0.24
-Nodes (7): sendInline(), bot.on('inline_query'), parseLink(), SHARE_RESOLVERS, bot.on('chosen_inline_result'), INLINE_RESULT, inlineNote()
+Cohesion: 0.22
+Nodes (9): bot.on('inline_query'), prepareInline(), parseLink(), sendInline(), SHARE_RESOLVERS, bot.on('chosen_inline_result'), INLINE_RESULT, inlineNote() (+1 more)
 
 ### Community 14 - "Screenshot Buttons"
 Cohesion: 0.05
